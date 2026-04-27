@@ -37,7 +37,7 @@ export const Route = createRootRoute({
           "Análise em tempo real do mercado do Cartola FC com IA: escalação ótima, comparação de jogadores e capitão da rodada.",
       },
       { name: "author", content: "Cartola IA" },
-      { property: "og:title", content: "Cartola IA — Insights inteligentes" },
+      { property: "og:title", content: "Cartola IA — Insights inteligentes pra sua escalação" },
       {
         property: "og:description",
         content: "IA que monta sua escalação ótima do Cartola FC com base nos dados ao vivo.",
@@ -45,6 +45,12 @@ export const Route = createRootRoute({
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "Cartola IA — Insights inteligentes pra sua escalação" },
+      { name: "description", content: "Cartola AI Insights provides AI-driven recommendations for optimal fantasy football team lineups." },
+      { property: "og:description", content: "Cartola AI Insights provides AI-driven recommendations for optimal fantasy football team lineups." },
+      { name: "twitter:description", content: "Cartola AI Insights provides AI-driven recommendations for optimal fantasy football team lineups." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/f2f284a9-5db9-4065-80b8-7e2acfe40634/id-preview-4e3f5a54--162a7dd6-91d2-4f74-999a-4d954cc80255.lovable.app-1777318758260.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/f2f284a9-5db9-4065-80b8-7e2acfe40634/id-preview-4e3f5a54--162a7dd6-91d2-4f74-999a-4d954cc80255.lovable.app-1777318758260.png" },
     ],
     links: [
       {
