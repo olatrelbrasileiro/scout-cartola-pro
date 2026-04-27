@@ -9,10 +9,16 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as EscalacaoRouteImport } from './routes/escalacao'
 import { Route as CompararRouteImport } from './routes/comparar'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 
+const EscalacaoRoute = EscalacaoRouteImport.update({
+  id: '/escalacao',
+  path: '/escalacao',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CompararRoute = CompararRouteImport.update({
   id: '/comparar',
   path: '/comparar',
@@ -32,35 +38,46 @@ const ApiChatRoute = ApiChatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/comparar': typeof CompararRoute
+  '/escalacao': typeof EscalacaoRoute
   '/api/chat': typeof ApiChatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/comparar': typeof CompararRoute
+  '/escalacao': typeof EscalacaoRoute
   '/api/chat': typeof ApiChatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/comparar': typeof CompararRoute
+  '/escalacao': typeof EscalacaoRoute
   '/api/chat': typeof ApiChatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/comparar' | '/api/chat'
+  fullPaths: '/' | '/comparar' | '/escalacao' | '/api/chat'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/comparar' | '/api/chat'
-  id: '__root__' | '/' | '/comparar' | '/api/chat'
+  to: '/' | '/comparar' | '/escalacao' | '/api/chat'
+  id: '__root__' | '/' | '/comparar' | '/escalacao' | '/api/chat'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CompararRoute: typeof CompararRoute
+  EscalacaoRoute: typeof EscalacaoRoute
   ApiChatRoute: typeof ApiChatRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/escalacao': {
+      id: '/escalacao'
+      path: '/escalacao'
+      fullPath: '/escalacao'
+      preLoaderRoute: typeof EscalacaoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/comparar': {
       id: '/comparar'
       path: '/comparar'
@@ -88,6 +105,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CompararRoute: CompararRoute,
+  EscalacaoRoute: EscalacaoRoute,
   ApiChatRoute: ApiChatRoute,
 }
 export const routeTree = rootRouteImport
