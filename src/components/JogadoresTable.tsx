@@ -27,6 +27,7 @@ export function JogadoresTable({
   snapshot,
   selectable,
   onToggleSelect,
+  selected,
 }: {
   snapshot: DashboardSnapshot;
   selectable?: boolean;
