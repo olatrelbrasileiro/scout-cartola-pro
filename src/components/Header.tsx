@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { Trophy, BarChart3, Users, Sparkles } from "lucide-react";
+import { Trophy, BarChart3, Users, Sparkles, Moon, Sun } from "lucide-react";
+import { useTheme } from "@/components/ThemeProvider";
+import { Button } from "@/components/ui/button";
 
 const navItems = [
   { to: "/", label: "Mercado", icon: BarChart3 },
@@ -8,6 +10,7 @@ const navItems = [
 ] as const;
 
 export function Header() {
+  const { theme, toggle } = useTheme();
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4">
@@ -38,6 +41,9 @@ export function Header() {
               </span>
             </Link>
           ))}
+          <Button variant="ghost" size="icon" onClick={toggle} aria-label="Alternar tema" className="ml-1">
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
         </nav>
       </div>
     </header>

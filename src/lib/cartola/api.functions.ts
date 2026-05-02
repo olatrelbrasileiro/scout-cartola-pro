@@ -9,6 +9,7 @@ import type {
   Partida,
   Posicao,
 } from "./types";
+import { enriquecerAtletas, type RodadaPontuada } from "./scoring";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -107,3 +108,57 @@ export const getHistoricoMultiplasRodadas = createServerFn({ method: "POST" })
     );
     return { rodadas: results };
   });
+
+/**
+ * Snapshot ENRIQUECIDO: dashboard + histórico completo da temporada (todas
+ * rodadas anteriores) + score IA pré-calculado para cada atleta.
+ * Cache 5min porque depende de muitas chamadas.
+ */
+export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
+  const snapshot = await (async (): Promise<DashboardSnapshot> => {
+    const [mercado, dataM, partidasRes] = await Promise.all([
+      cached("status", 60_000, () => getJson<MercadoStatus>("/mercado/status")),
+      cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
+      cached("partidas:current", 60_000, () =>
+        getJson<{ partidas: Partida[] }>("/partidas").catch(() => ({ partidas: [] })),
+      ),
+    ]);
+    return { mercado, data: dataM, partidas: partidasRes.partidas ?? [] };
+  })();
+
+  // Busca histórico de todas as rodadas anteriores (até a atual - 1)
+  const rodadaAtual = snapshot.mercado.rodada_atual;
+  const rodadasParaBuscar: number[] = [];
+  // Limita a 12 últimas para não estourar — Cartola tem ~38 rodadas no Brasileirão
+  const inicio = Math.max(1, rodadaAtual - 12);
+  for (let r = inicio; r < rodadaAtual; r++) rodadasParaBuscar.push(r);
+
+  const rodadas: RodadaPontuada[] = await Promise.all(
+    rodadasParaBuscar.map((r) =>
+      cached(`pontuados:${r}`, 30 * 60_000, () =>
+        getJson<RodadaPontuada>(`/atletas/pontuados/${r}`).catch(() => ({ rodada: r, atletas: {} })),
+      ),
+    ),
+  );
+
+  const { atletas, historico, forma } = enriquecerAtletas(snapshot, rodadas);
+
+  // Converte historico Map em objeto serializável
+  const histObj: Record<string, ReturnType<typeof Object>> = {};
+  for (const [id, h] of historico.entries()) {
+    histObj[String(id)] = h as unknown as object;
+  }
+  const formaObj: Record<string, number> = {};
+  for (const [id, v] of forma.entries()) formaObj[String(id)] = v;
+
+  return {
+    mercado: snapshot.mercado,
+    clubes: snapshot.data.clubes,
+    posicoes: snapshot.data.posicoes,
+    partidas: snapshot.partidas,
+    atletas,
+    historico: histObj,
+    formaClube: formaObj,
+    rodadasAnalisadas: rodadasParaBuscar,
+  };
+});

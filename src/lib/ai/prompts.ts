@@ -1,5 +1,6 @@
 import type { Atleta, DashboardSnapshot } from "@/lib/cartola/types";
 import { POSICAO_NOME } from "@/lib/cartola/types";
+import { adversarioMap as advMapPart } from "@/lib/cartola/scoring";
 
 function statusLabel(id: number): string {
   return (
@@ -22,16 +23,13 @@ export function atletaToLine(a: Atleta, clubeNome: string, adversario?: string, 
 }
 
 export function adversarioMap(snapshot: DashboardSnapshot): Record<number, { adv: string; mando: "casa" | "fora" }> {
-  const map: Record<number, { adv: string; mando: "casa" | "fora" }> = {};
-  for (const p of snapshot.partidas) {
-    const casa = snapshot.data.clubes[String(p.clube_casa_id)];
-    const fora = snapshot.data.clubes[String(p.clube_visitante_id)];
-    if (casa && fora) {
-      map[p.clube_casa_id] = { adv: fora.abreviacao, mando: "casa" };
-      map[p.clube_visitante_id] = { adv: casa.abreviacao, mando: "fora" };
-    }
+  const m = advMapPart(snapshot.partidas);
+  const out: Record<number, { adv: string; mando: "casa" | "fora" }> = {};
+  for (const [clubeId, info] of m.entries()) {
+    const advClube = snapshot.data.clubes[String(info.adv_id)];
+    if (advClube) out[clubeId] = { adv: advClube.abreviacao, mando: info.mando };
   }
-  return map;
+  return out;
 }
 
 /** Constrói um snapshot textual para injetar no system prompt do chat. */

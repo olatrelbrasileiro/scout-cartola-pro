@@ -28,13 +28,11 @@ export function JogadoresTable({
   selectable,
   onToggleSelect,
   selected,
-  maxRows = 200,
 }: {
   snapshot: DashboardSnapshot;
   selectable?: boolean;
   onToggleSelect?: (a: Atleta) => void;
   selected?: number[];
-  maxRows?: number;
 }) {
   const [busca, setBusca] = useState("");
   const [posicao, setPosicao] = useState<string>("all");
@@ -64,8 +62,8 @@ export function JogadoresTable({
       }
       return sortDir === "asc" ? Number(va) - Number(vb) : Number(vb) - Number(va);
     });
-    return arr.slice(0, maxRows);
-  }, [snapshot, busca, posicao, statusFiltro, clube, sortKey, sortDir, maxRows]);
+    return arr;
+  }, [snapshot, busca, posicao, statusFiltro, clube, sortKey, sortDir]);
 
   const toggleSort = (k: SortKey) => {
     if (k === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -218,7 +216,7 @@ export function JogadoresTable({
         </table>
       </div>
       <div className="border-t border-border/40 px-3 py-2 text-xs text-muted-foreground">
-        Mostrando {filtered.length} jogadores (limite {maxRows})
+        Mostrando {filtered.length} jogadores
       </div>
     </div>
   );

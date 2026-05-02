@@ -1,8 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
-import { adversarioMap, atletaToLine } from "./prompts";
-import { POSICAO_NOME } from "@/lib/cartola/types";
+import { getDashboardEnriquecido } from "@/lib/cartola/api.functions";
+import { POSICAO_NOME, type AtletaComScore } from "@/lib/cartola/types";
+import { geminiGenerate, GEMINI_MODEL_PRO } from "./gemini.server";
+import { adversarioMap } from "@/lib/cartola/scoring";
 
 const ESQUEMAS: Record<string, { gol: number; lat: number; zag: number; mei: number; ata: number }> = {
   "3-4-3": { gol: 1, lat: 0, zag: 3, mei: 4, ata: 3 },
@@ -17,69 +18,92 @@ const ESQUEMAS: Record<string, { gol: number; lat: number; zag: number; mei: num
 const Input = z.object({
   cartoletas: z.number().min(40).max(500),
   esquema: z.enum(Object.keys(ESQUEMAS) as [string, ...string[]]),
-  priorizarMando: z.boolean().default(true),
+  objetivo: z.enum(["pontos", "equilibrado", "lucro"]).default("pontos"),
   evitarDuvidas: z.boolean().default(true),
 });
 
 export type EscalacaoIA = {
   esquema: string;
   capitao: number;
-  titulares: { atleta_id: number; apelido: string; posicao: string; clube: string; preco: number; motivo: string }[];
-  reservas: { atleta_id: number; apelido: string; posicao: string; clube: string; preco: number }[];
+  titulares: { atleta_id: number; apelido: string; posicao: string; clube: string; preco: number; score: number; motivo: string }[];
+  reservaLuxo: { atleta_id: number; apelido: string; posicao: string; clube: string; preco: number; score: number } | null;
   custo_total: number;
   saldo_restante: number;
   resumo_estrategia: string;
+  fontes_web: { uri: string; title: string }[];
 };
+
+function topoPorPosicao(atletas: AtletaComScore[], posicao: number, n: number, objetivo: string) {
+  const filtrados = atletas.filter((a) => a.posicao_id === posicao);
+  const sorted = [...filtrados].sort((a, b) => {
+    if (objetivo === "lucro") {
+      // valoriza variacao + score
+      return (b.variacao_num + b.score_ia / 10) - (a.variacao_num + a.score_ia / 10);
+    }
+    if (objetivo === "equilibrado") {
+      // score / preço (custo-benefício)
+      const ra = a.score_ia / Math.max(1, a.preco_num);
+      const rb = b.score_ia / Math.max(1, b.preco_num);
+      return rb - ra;
+    }
+    return b.score_ia - a.score_ia;
+  });
+  return sorted.slice(0, n);
+}
 
 export const gerarEscalacao = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => Input.parse(d))
   .handler(async ({ data }): Promise<EscalacaoIA | { error: string }> => {
-    const apiKey = process.env.LOVABLE_API_KEY;
-    if (!apiKey) return { error: "LOVABLE_API_KEY ausente" };
+    if (!process.env.GEMINI_API_KEY) return { error: "GEMINI_API_KEY ausente" };
 
-    const snapshot = await getDashboardSnapshot();
-    const adv = adversarioMap(snapshot);
+    const enriched = await getDashboardEnriquecido();
     const reqEsquema = ESQUEMAS[data.esquema];
+    const adv = adversarioMap(enriched.partidas);
 
-    // Pré-filtra candidatos: prováveis sempre; dúvidas só se evitarDuvidas=false
     const statusOk = data.evitarDuvidas ? [7] : [2, 7];
-    const candidatos = snapshot.data.atletas
-      .filter((a) => statusOk.includes(a.status_id) && a.preco_num > 0 && a.preco_num <= data.cartoletas)
-      .sort((a, b) => b.media_num - a.media_num);
+    let candidatos = enriched.atletas
+      .filter((a) => statusOk.includes(a.status_id) && a.preco_num > 0 && a.preco_num <= data.cartoletas);
 
-    // Limita por posição para não estourar contexto
-    const porPos: Record<number, typeof candidatos> = {};
-    for (const a of candidatos) {
-      (porPos[a.posicao_id] ||= []).push(a);
-    }
-    const limitados: typeof candidatos = [];
+    // Top por posição (15 por linha — mais que suficiente sem estourar contexto)
+    const porPos: AtletaComScore[] = [];
     for (const pos of [1, 2, 3, 4, 5]) {
-      limitados.push(...(porPos[pos] ?? []).slice(0, 25));
+      porPos.push(...topoPorPosicao(candidatos, pos, 15, data.objetivo));
     }
+    candidatos = porPos;
 
-    const linhas = limitados.map((a) => {
-      const clube = snapshot.data.clubes[String(a.clube_id)]?.abreviacao ?? "?";
-      const ad = adv[a.clube_id];
-      return atletaToLine(a, clube, ad?.adv, ad?.mando);
+    const linhas = candidatos.map((a) => {
+      const clube = enriched.clubes[String(a.clube_id)]?.abreviacao ?? "?";
+      const ad = adv.get(a.clube_id);
+      const advClube = ad ? enriched.clubes[String(ad.adv_id)]?.abreviacao ?? "?" : "?";
+      const advTxt = ad ? ` vs ${advClube} (${ad.mando})` : "";
+      return `#${a.atleta_id} ${a.apelido} (${POSICAO_NOME[a.posicao_id]}, ${clube}) C$${a.preco_num.toFixed(2)} | score:${a.score_ia} | méd:${a.media_num.toFixed(1)} | últ:${a.pontos_num.toFixed(1)} | var:${a.variacao_num.toFixed(2)} | atuou_ult:${a.fatores.atuou_ultima ? "sim" : "nao"}${advTxt}`;
     });
 
-    const sys = `Você é um especialista em Cartola FC. Receba o orçamento, esquema e candidatos e devolva a escalação ÓTIMA respeitando RIGOROSAMENTE:
+    const objetivoTxt =
+      data.objetivo === "lucro"
+        ? "MAXIMIZAR VALORIZAÇÃO (lucro). Prefira jogadores com variação positiva alta e bom mando."
+        : data.objetivo === "equilibrado"
+          ? "EQUILIBRADO entre pontos e custo-benefício."
+          : "MAXIMIZAR PONTOS. Prefira jogadores com maior score_ia e melhor confronto.";
+
+    const sys = `Você é um especialista em Cartola FC. Use seu conhecimento sobre os times brasileiros + busca web para confirmar últimas notícias (lesões, escalação provável, fase do time) antes de escalar.
+
+REGRAS RÍGIDAS:
 - Esquema ${data.esquema} (GOL:${reqEsquema.gol}, LAT:${reqEsquema.lat}, ZAG:${reqEsquema.zag}, MEI:${reqEsquema.mei}, ATA:${reqEsquema.ata})
-- Custo total dos 11 titulares <= ${data.cartoletas} cartoletas
-- ${data.priorizarMando ? "PRIORIZE jogadores jogando em casa contra adversários fracos." : "Mando não é prioridade."}
-- ${data.evitarDuvidas ? "Use apenas jogadores prováveis." : "Pode incluir dúvidas se o upside for alto."}
-- Capitão = jogador com maior expectativa de pontos (geralmente atacante/meia em casa).
-- Reservas: 1 por linha (gol, zag/lat, mei, ata) — mais baratos.
-- Devolva SOMENTE via tool call.
+- Custo dos 11 titulares <= ${data.cartoletas}
+- Objetivo: ${objetivoTxt}
+- ${data.evitarDuvidas ? "Use APENAS prováveis (status 7)." : "Pode usar dúvidas se upside justificar."}
+- Capitão = jogador com MAIOR score combinado considerando confronto.
+- Reserva de Luxo: 1 jogador caro fora do XI inicial que pode entrar.
+- Use APENAS atleta_id da lista de candidatos. Não invente jogadores.
 
-Use o atleta_id exato dos candidatos abaixo. Não invente jogadores.`;
+Devolva via tool call montar_escalacao.`;
 
-    const userMsg = `Orçamento: C$${data.cartoletas.toFixed(2)}\nEsquema: ${data.esquema}\n\nCandidatos:\n${linhas.join("\n")}`;
+    const userMsg = `Orçamento: C$${data.cartoletas.toFixed(2)}\nEsquema: ${data.esquema}\nObjetivo: ${data.objetivo}\n\nCandidatos:\n${linhas.join("\n")}`;
 
-    const tools = [
-      {
-        type: "function",
-        function: {
+    const tool = {
+      function_declarations: [
+        {
           name: "montar_escalacao",
           description: "Devolve a escalação ótima respeitando esquema e orçamento.",
           parameters: {
@@ -93,105 +117,83 @@ Use o atleta_id exato dos candidatos abaixo. Não invente jogadores.`;
                   type: "object",
                   properties: {
                     atleta_id: { type: "number" },
-                    motivo: { type: "string", description: "Por que este jogador (1 frase)" },
+                    motivo: { type: "string" },
                   },
                   required: ["atleta_id", "motivo"],
-                  additionalProperties: false,
                 },
               },
-              reservas: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: { atleta_id: { type: "number" } },
-                  required: ["atleta_id"],
-                  additionalProperties: false,
-                },
-              },
+              reserva_luxo: { type: "number", description: "atleta_id do reserva de luxo (opcional)" },
               resumo_estrategia: { type: "string" },
             },
-            required: ["esquema", "capitao", "titulares", "reservas", "resumo_estrategia"],
-            additionalProperties: false,
+            required: ["esquema", "capitao", "titulares", "resumo_estrategia"],
           },
         },
-      },
-    ];
+      ],
+    };
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: userMsg },
-        ],
-        tools,
-        tool_choice: { type: "function", function: { name: "montar_escalacao" } },
-      }),
-    });
-
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      console.error("AI escalacao erro", res.status, txt);
-      if (res.status === 429) return { error: "Muitas requisições. Tente novamente em alguns segundos." };
-      if (res.status === 402) return { error: "Créditos da IA esgotados." };
-      return { error: "Falha ao gerar escalação." };
+    let json;
+    try {
+      json = await geminiGenerate(GEMINI_MODEL_PRO, {
+        contents: [{ role: "user", parts: [{ text: userMsg }] }],
+        systemInstruction: { parts: [{ text: sys }] },
+        tools: [tool],
+        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["montar_escalacao"] } },
+        generationConfig: { temperature: 0.4 },
+      });
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : "Falha Gemini" };
     }
 
-    const json = (await res.json()) as {
-      choices: { message: { tool_calls?: { function: { arguments: string } }[] } }[];
-    };
-    const args = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!args) return { error: "IA não devolveu escalação estruturada." };
+    const cand = json.candidates?.[0];
+    const fnPart = cand?.content?.parts?.find((p) => "functionCall" in p) as
+      | { functionCall: { name: string; args: Record<string, unknown> } }
+      | undefined;
+    if (!fnPart) return { error: "IA não devolveu escalação estruturada." };
 
-    let parsed: {
+    const args = fnPart.functionCall.args as {
       esquema: string;
       capitao: number;
       titulares: { atleta_id: number; motivo: string }[];
-      reservas: { atleta_id: number }[];
+      reserva_luxo?: number;
       resumo_estrategia: string;
     };
-    try {
-      parsed = JSON.parse(args);
-    } catch {
-      return { error: "Resposta da IA inválida." };
-    }
 
-    const byId = new Map(snapshot.data.atletas.map((a) => [a.atleta_id, a]));
-    const decorate = (id: number, motivo?: string) => {
+    const byId = new Map(enriched.atletas.map((a) => [a.atleta_id, a]));
+    const decorate = (id: number, motivo = "") => {
       const a = byId.get(id);
       if (!a) return null;
       return {
         atleta_id: a.atleta_id,
         apelido: a.apelido,
         posicao: POSICAO_NOME[a.posicao_id] ?? "?",
-        clube: snapshot.data.clubes[String(a.clube_id)]?.abreviacao ?? "?",
+        clube: enriched.clubes[String(a.clube_id)]?.abreviacao ?? "?",
         preco: a.preco_num,
-        motivo: motivo ?? "",
+        score: a.score_ia,
+        motivo,
       };
     };
 
-    const titulares = parsed.titulares
+    const titulares = args.titulares
       .map((t) => decorate(t.atleta_id, t.motivo))
       .filter((x): x is NonNullable<ReturnType<typeof decorate>> => x !== null);
-    const reservas = parsed.reservas
-      .map((r) => {
-        const d = decorate(r.atleta_id);
-        if (!d) return null;
-        const { motivo: _ignored, ...rest } = d;
-        return rest;
-      })
-      .filter((x): x is NonNullable<ReturnType<typeof decorate>> => x !== null);
-
+    const reserva = args.reserva_luxo ? decorate(args.reserva_luxo) : null;
+    const reservaLuxo = reserva
+      ? { atleta_id: reserva.atleta_id, apelido: reserva.apelido, posicao: reserva.posicao, clube: reserva.clube, preco: reserva.preco, score: reserva.score }
+      : null;
     const custo = titulares.reduce((s, t) => s + t.preco, 0);
+
+    const fontes = (cand?.groundingMetadata?.groundingChunks ?? [])
+      .map((g) => g.web)
+      .filter((w): w is { uri: string; title: string } => Boolean(w?.uri));
+
     return {
-      esquema: parsed.esquema,
-      capitao: parsed.capitao,
+      esquema: args.esquema,
+      capitao: args.capitao,
       titulares,
-      reservas,
+      reservaLuxo,
       custo_total: Number(custo.toFixed(2)),
       saldo_restante: Number((data.cartoletas - custo).toFixed(2)),
-      resumo_estrategia: parsed.resumo_estrategia,
+      resumo_estrategia: args.resumo_estrategia,
+      fontes_web: fontes.slice(0, 6),
     };
   });

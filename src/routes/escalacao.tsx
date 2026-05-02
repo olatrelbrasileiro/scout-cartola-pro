@@ -63,7 +63,7 @@ function EscalacaoPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[image:var(--gradient-pitch)]">
+    <div className="min-h-screen bg-background">
       <Header />
       <main className="mx-auto max-w-5xl space-y-6 px-4 py-6">
         <div>
@@ -207,25 +207,18 @@ function ResultadoEscalacao({ r }: { r: EscalacaoIA }) {
         </div>
       </div>
 
-      {r.reservas.length > 0 && (
+      {r.reservaLuxo && (
         <div className="rounded-xl border border-border/60 bg-card p-5 shadow-[var(--shadow-card)]">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Reservas
+            Reserva de Luxo
           </h2>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {r.reservas.map((b) => (
-              <div
-                key={b.atleta_id}
-                className="flex items-center gap-2 rounded-md border border-border/40 bg-muted/20 p-2 text-sm"
-              >
-                <Badge variant="outline" className="font-mono text-[10px]">
-                  {b.posicao.slice(0, 3).toUpperCase()}
-                </Badge>
-                <span className="font-medium">{b.apelido}</span>
-                <span className="text-xs text-muted-foreground">{b.clube}</span>
-                <span className="ml-auto font-mono text-xs">C${b.preco.toFixed(1)}</span>
-              </div>
-            ))}
+          <div className="flex items-center gap-2 rounded-md border border-border/40 bg-muted/20 p-2 text-sm">
+            <Badge variant="outline" className="font-mono text-[10px]">
+              {r.reservaLuxo.posicao.slice(0, 3).toUpperCase()}
+            </Badge>
+            <span className="font-medium">{r.reservaLuxo.apelido}</span>
+            <span className="text-xs text-muted-foreground">{r.reservaLuxo.clube}</span>
+            <span className="ml-auto font-mono text-xs">C${r.reservaLuxo.preco.toFixed(1)}</span>
           </div>
         </div>
       )}
