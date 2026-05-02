@@ -28,6 +28,20 @@ export type Atleta = {
   minimo_para_valorizar?: number;
 };
 
+export type AtletaComScore = Atleta & {
+  score_ia: number;
+  fatores: {
+    historico: number;
+    momento: number;
+    media_basica: number;
+    time: number;
+    confronto: number;
+    atuou_ultima: boolean;
+  };
+  rodadas_atuou: number[];
+  popularidade?: number;
+};
+
 export type MercadoStatus = {
   rodada_atual: number;
   status_mercado: number; // 1 = aberto, 2 = fechado
