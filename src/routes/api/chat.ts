@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
 import { buildContextoChat } from "@/lib/ai/prompts";
+import { geminiStream, GEMINI_MODEL_FAST } from "@/lib/ai/gemini.server";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -27,9 +28,9 @@ export const Route = createFileRoute("/api/chat")({
     handlers: {
       OPTIONS: async () => new Response(null, { status: 204, headers: CORS }),
       POST: async ({ request }) => {
-        const apiKey = process.env.LOVABLE_API_KEY;
+        const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
-          return new Response(JSON.stringify({ error: "LOVABLE_API_KEY ausente" }), {
+          return new Response(JSON.stringify({ error: "GEMINI_API_KEY ausente" }), {
             status: 500,
             headers: { ...CORS, "Content-Type": "application/json" },
           });
@@ -56,38 +57,27 @@ export const Route = createFileRoute("/api/chat")({
           systemPrompt += `\n\nContexto adicional do usuário:\n${payload.extraContext}`;
         }
 
-        const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "google/gemini-3-flash-preview",
-            stream: true,
-            messages: [{ role: "system", content: systemPrompt }, ...payload.messages],
-          }),
-        });
-
-        if (!aiRes.ok) {
-          const status = aiRes.status;
-          const text = await aiRes.text().catch(() => "");
-          console.error("AI gateway erro", status, text);
-          const msg =
-            status === 429
-              ? "Muitas requisições. Aguarde alguns segundos."
-              : status === 402
-                ? "Créditos da IA esgotados. Adicione créditos no workspace Lovable."
-                : "Erro no gateway de IA";
-          return new Response(JSON.stringify({ error: msg }), {
-            status,
-            headers: { ...CORS, "Content-Type": "application/json" },
+        try {
+          const contents = payload.messages.map((m) => ({
+            role: m.role === "assistant" ? ("model" as const) : ("user" as const),
+            parts: [{ text: m.content }],
+          }));
+          const stream = await geminiStream(GEMINI_MODEL_FAST, {
+            contents,
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            tools: [{ google_search: {} }],
+            generationConfig: { temperature: 0.7 },
           });
+          return new Response(stream, {
+            headers: { ...CORS, "Content-Type": "text/event-stream" },
+          });
+        } catch (e) {
+          console.error("Gemini erro:", e);
+          return new Response(
+            JSON.stringify({ error: e instanceof Error ? e.message : "Erro Gemini" }),
+            { status: 500, headers: { ...CORS, "Content-Type": "application/json" } },
+          );
         }
-
-        return new Response(aiRes.body, {
-          headers: { ...CORS, "Content-Type": "text/event-stream" },
-        });
       },
     },
   },
