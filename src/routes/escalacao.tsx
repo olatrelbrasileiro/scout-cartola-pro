@@ -63,7 +63,7 @@ function EscalacaoPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[image:var(--gradient-pitch)]">
+    <div className="min-h-screen bg-background">
       <Header />
       <main className="mx-auto max-w-5xl space-y-6 px-4 py-6">
         <div>

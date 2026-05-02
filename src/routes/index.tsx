@@ -55,7 +55,7 @@ function Dashboard() {
   const snapshot = Route.useLoaderData();
 
   return (
-    <div className="min-h-screen bg-[image:var(--gradient-pitch)]">
+    <div className="min-h-screen bg-background">
       <Header />
       <main className="mx-auto max-w-7xl space-y-4 px-4 py-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
