@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getDashboardEnriquecido } from "@/lib/cartola/api.functions";
 import { POSICAO_NOME, type AtletaComScore } from "@/lib/cartola/types";
-import { geminiGenerate, GEMINI_MODEL_PRO } from "./gemini.server";
+import { gatewayChat, MODEL_PRO } from "./gateway.server";
 import { adversarioMap } from "@/lib/cartola/scoring";
 
 const ESQUEMAS: Record<string, { gol: number; lat: number; zag: number; mei: number; ata: number }> = {
@@ -54,7 +54,7 @@ function topoPorPosicao(atletas: AtletaComScore[], posicao: number, n: number, o
 export const gerarEscalacao = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => Input.parse(d))
   .handler(async ({ data }): Promise<EscalacaoIA | { error: string }> => {
-    if (!process.env.GEMINI_API_KEY) return { error: "GEMINI_API_KEY ausente" };
+    if (!process.env.LOVABLE_API_KEY) return { error: "LOVABLE_API_KEY ausente" };
 
     const enriched = await getDashboardEnriquecido();
     const reqEsquema = ESQUEMAS[data.esquema];
@@ -102,61 +102,64 @@ Devolva via tool call montar_escalacao.`;
     const userMsg = `Orçamento: C$${data.cartoletas.toFixed(2)}\nEsquema: ${data.esquema}\nObjetivo: ${data.objetivo}\n\nCandidatos:\n${linhas.join("\n")}`;
 
     const tool = {
-      function_declarations: [
-        {
-          name: "montar_escalacao",
-          description: "Devolve a escalação ótima respeitando esquema e orçamento.",
-          parameters: {
-            type: "object",
-            properties: {
-              esquema: { type: "string" },
-              capitao: { type: "number", description: "atleta_id do capitão" },
-              titulares: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    atleta_id: { type: "number" },
-                    motivo: { type: "string" },
-                  },
-                  required: ["atleta_id", "motivo"],
+      type: "function" as const,
+      function: {
+        name: "montar_escalacao",
+        description: "Devolve a escalação ótima respeitando esquema e orçamento.",
+        parameters: {
+          type: "object",
+          properties: {
+            esquema: { type: "string" },
+            capitao: { type: "number", description: "atleta_id do capitão" },
+            titulares: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  atleta_id: { type: "number" },
+                  motivo: { type: "string" },
                 },
+                required: ["atleta_id", "motivo"],
               },
-              reserva_luxo: { type: "number", description: "atleta_id do reserva de luxo (opcional)" },
-              resumo_estrategia: { type: "string" },
             },
-            required: ["esquema", "capitao", "titulares", "resumo_estrategia"],
+            reserva_luxo: { type: "number", description: "atleta_id do reserva de luxo (opcional)" },
+            resumo_estrategia: { type: "string" },
           },
+          required: ["esquema", "capitao", "titulares", "resumo_estrategia"],
         },
-      ],
+      },
     };
 
     let json;
     try {
-      json = await geminiGenerate(GEMINI_MODEL_PRO, {
-        contents: [{ role: "user", parts: [{ text: userMsg }] }],
-        systemInstruction: { parts: [{ text: sys }] },
+      json = await gatewayChat({
+        model: MODEL_PRO,
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: userMsg },
+        ],
         tools: [tool],
-        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["montar_escalacao"] } },
-        generationConfig: { temperature: 0.4 },
+        tool_choice: { type: "function", function: { name: "montar_escalacao" } },
+        temperature: 0.4,
       });
     } catch (e) {
-      return { error: e instanceof Error ? e.message : "Falha Gemini" };
+      return { error: e instanceof Error ? e.message : "Falha IA" };
     }
 
-    const cand = json.candidates?.[0];
-    const fnPart = cand?.content?.parts?.find((p) => "functionCall" in p) as
-      | { functionCall: { name: string; args: Record<string, unknown> } }
-      | undefined;
-    if (!fnPart) return { error: "IA não devolveu escalação estruturada." };
-
-    const args = fnPart.functionCall.args as {
+    const call = json.choices?.[0]?.message?.tool_calls?.[0];
+    if (!call) return { error: "IA não devolveu escalação estruturada." };
+    let args: {
       esquema: string;
       capitao: number;
       titulares: { atleta_id: number; motivo: string }[];
       reserva_luxo?: number;
       resumo_estrategia: string;
     };
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      return { error: "Args inválidos da IA" };
+    }
 
     const byId = new Map(enriched.atletas.map((a) => [a.atleta_id, a]));
     const decorate = (id: number, motivo = "") => {
@@ -182,9 +185,7 @@ Devolva via tool call montar_escalacao.`;
       : null;
     const custo = titulares.reduce((s, t) => s + t.preco, 0);
 
-    const fontes = (cand?.groundingMetadata?.groundingChunks ?? [])
-      .map((g) => g.web)
-      .filter((w): w is { uri: string; title: string } => Boolean(w?.uri));
+    const fontes: { uri: string; title: string }[] = [];
 
     return {
       esquema: args.esquema,
@@ -194,6 +195,6 @@ Devolva via tool call montar_escalacao.`;
       custo_total: Number(custo.toFixed(2)),
       saldo_restante: Number((data.cartoletas - custo).toFixed(2)),
       resumo_estrategia: args.resumo_estrategia,
-      fontes_web: fontes.slice(0, 6),
+      fontes_web: fontes,
     };
   });
