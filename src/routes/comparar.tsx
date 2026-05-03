@@ -2,13 +2,13 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Loader2, X } from "lucide-react";
 import { Header } from "@/components/Header";
-import { JogadoresTable } from "@/components/JogadoresTable";
+import { MercadoTable } from "@/components/MercadoTable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
-import type { Atleta } from "@/lib/cartola/types";
+import { getDashboardEnriquecido } from "@/lib/cartola/api.functions";
+import type { AtletaComScore } from "@/lib/cartola/types";
 import { POSICAO_NOME, STATUS_MAP } from "@/lib/cartola/types";
-import { adversarioMap } from "@/lib/ai/prompts";
+import { adversarioMap } from "@/lib/cartola/scoring";
 
 export const Route = createFileRoute("/comparar")({
   head: () => ({
@@ -20,7 +20,7 @@ export const Route = createFileRoute("/comparar")({
       },
     ],
   }),
-  loader: () => getDashboardSnapshot(),
+  loader: () => getDashboardEnriquecido(),
   staleTime: 60_000,
   pendingComponent: () => (
     <div>
@@ -41,11 +41,11 @@ export const Route = createFileRoute("/comparar")({
 });
 
 function Comparar() {
-  const snapshot = Route.useLoaderData();
-  const [selecionados, setSelecionados] = useState<Atleta[]>([]);
-  const adv = adversarioMap(snapshot);
+  const data = Route.useLoaderData();
+  const [selecionados, setSelecionados] = useState<AtletaComScore[]>([]);
+  const adv = adversarioMap(data.partidas);
 
-  const toggle = (a: Atleta) => {
+  const toggle = (a: AtletaComScore) => {
     setSelecionados((prev) => {
       if (prev.some((x) => x.atleta_id === a.atleta_id)) {
         return prev.filter((x) => x.atleta_id !== a.atleta_id);
@@ -72,8 +72,9 @@ function Comparar() {
           <div className="rounded-xl border border-border/60 bg-card p-4 shadow-[var(--shadow-card)]">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {selecionados.map((a) => {
-                const clube = snapshot.data.clubes[String(a.clube_id)];
-                const ad = adv[a.clube_id];
+                const clube = data.clubes[String(a.clube_id)];
+                const ad = adv.get(a.clube_id);
+                const advAb = ad ? data.clubes[String(ad.adv_id)]?.abreviacao : null;
                 return (
                   <div key={a.atleta_id} className="relative rounded-lg border border-border/60 bg-muted/30 p-3">
                     <button
@@ -103,7 +104,7 @@ function Comparar() {
                       </dd>
                       <dt className="text-muted-foreground">Próximo</dt>
                       <dd className="text-right text-xs">
-                        {ad ? `${ad.mando === "casa" ? "vs" : "@"} ${ad.adv}` : "—"}
+                        {ad ? `${ad.mando === "casa" ? "vs" : "@"} ${advAb}` : "—"}
                       </dd>
                     </dl>
                   </div>
@@ -125,8 +126,8 @@ function Comparar() {
           </div>
         )}
 
-        <JogadoresTable
-          snapshot={snapshot}
+        <MercadoTable
+          data={data}
           selectable
           selected={selecionados.map((s) => s.atleta_id)}
           onToggleSelect={toggle}

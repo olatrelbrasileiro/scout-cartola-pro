@@ -2,9 +2,9 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { MercadoStatusBar } from "@/components/MercadoStatusBar";
-import { JogadoresTable } from "@/components/JogadoresTable";
+import { MercadoTable } from "@/components/MercadoTable";
 import { Button } from "@/components/ui/button";
-import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
+import { getDashboardEnriquecido } from "@/lib/cartola/api.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -17,7 +17,7 @@ export const Route = createFileRoute("/")({
       },
     ],
   }),
-  loader: () => getDashboardSnapshot(),
+  loader: () => getDashboardEnriquecido(),
   staleTime: 60_000,
   pendingComponent: PendingPage,
   errorComponent: ErrorPage,
@@ -51,7 +51,7 @@ function ErrorPage({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 function Dashboard() {
-  const snapshot = Route.useLoaderData();
+  const data = Route.useLoaderData();
 
   return (
     <div className="min-h-screen bg-background">
@@ -71,9 +71,9 @@ function Dashboard() {
           </Link>
         </div>
 
-        <MercadoStatusBar status={snapshot.mercado} />
+        <MercadoStatusBar status={data.mercado} />
 
-        <JogadoresTable snapshot={snapshot} />
+        <MercadoTable data={data} />
       </main>
     </div>
   );

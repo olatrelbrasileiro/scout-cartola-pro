@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { gerarEscalacao, type EscalacaoIA } from "@/lib/ai/escalacao.functions";
+import { CampoEscalacao } from "@/components/CampoEscalacao";
 
 export const Route = createFileRoute("/escalacao")({
   head: () => ({
@@ -38,7 +39,7 @@ const ESQUEMAS = ["3-4-3", "3-5-2", "4-3-3", "4-4-2", "4-5-1", "5-3-2", "5-4-1"]
 function EscalacaoPage() {
   const [cartoletas, setCartoletas] = useState(120);
   const [esquema, setEsquema] = useState("4-3-3");
-  const [priorizarMando, setPriorizarMando] = useState(true);
+  const [objetivo, setObjetivo] = useState<"pontos" | "equilibrado" | "lucro">("pontos");
   const [evitarDuvidas, setEvitarDuvidas] = useState(true);
   const [loading, setLoading] = useState(false);
   const [resultado, setResultado] = useState<EscalacaoIA | null>(null);
@@ -48,7 +49,7 @@ function EscalacaoPage() {
     setLoading(true);
     setResultado(null);
     try {
-      const r = await gerar({ data: { cartoletas, esquema, priorizarMando, evitarDuvidas } });
+      const r = await gerar({ data: { cartoletas, esquema, objetivo, evitarDuvidas } });
       if ("error" in r) {
         toast.error(r.error);
       } else {
@@ -96,13 +97,17 @@ function EscalacaoPage() {
               </SelectContent>
             </Select>
           </div>
-          <label className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 p-3">
-            <div>
-              <div className="text-sm font-medium">Priorizar jogo em casa</div>
-              <div className="text-xs text-muted-foreground">Favorece jogadores mandantes</div>
-            </div>
-            <Switch checked={priorizarMando} onCheckedChange={setPriorizarMando} />
-          </label>
+          <div className="space-y-2">
+            <Label>Objetivo da escalação</Label>
+            <Select value={objetivo} onValueChange={(v) => setObjetivo(v as typeof objetivo)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pontos">Mais pontos</SelectItem>
+                <SelectItem value="equilibrado">Equilibrado (custo-benefício)</SelectItem>
+                <SelectItem value="lucro">Valorizar (lucro)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <label className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 p-3">
             <div>
               <div className="text-sm font-medium">Evitar dúvidas</div>
@@ -170,6 +175,9 @@ function ResultadoEscalacao({ r }: { r: EscalacaoIA }) {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Titulares
         </h2>
+        <div className="mb-4">
+          <CampoEscalacao titulares={r.titulares} capitao={r.capitao} />
+        </div>
         <div className="space-y-2">
           {titulares.map((t) => {
             const isCap = t.atleta_id === r.capitao;
