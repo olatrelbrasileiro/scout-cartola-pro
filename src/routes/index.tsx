@@ -3,7 +3,6 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { MercadoStatusBar } from "@/components/MercadoStatusBar";
 import { JogadoresTable } from "@/components/JogadoresTable";
-import { ChatPanel } from "@/components/ChatPanel";
 import { Button } from "@/components/ui/button";
 import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
 
@@ -74,12 +73,7 @@ function Dashboard() {
 
         <MercadoStatusBar status={snapshot.mercado} />
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_minmax(360px,420px)]">
-          <JogadoresTable snapshot={snapshot} />
-          <div className="lg:sticky lg:top-20 lg:h-[calc(100vh-6rem)]">
-            <ChatPanel />
-          </div>
-        </div>
+        <JogadoresTable snapshot={snapshot} />
       </main>
     </div>
   );
