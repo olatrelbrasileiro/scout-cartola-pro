@@ -9,7 +9,7 @@ import type {
   Partida,
   Posicao,
 } from "./types";
-import { enriquecerAtletas, type RodadaPontuada } from "./scoring";
+import { enriquecerAtletas, type HistoricoPorAtleta, type RodadaPontuada } from "./scoring";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -143,10 +143,10 @@ export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler
 
   const { atletas, historico, forma } = enriquecerAtletas(snapshot, rodadas);
 
-  // Converte historico Map em objeto serializável
-  const histObj: Record<string, ReturnType<typeof Object>> = {};
+  type HistEntry = ReturnType<HistoricoPorAtleta["get"]>;
+  const histObj: Record<string, NonNullable<HistEntry>> = {};
   for (const [id, h] of historico.entries()) {
-    histObj[String(id)] = h as unknown as object;
+    histObj[String(id)] = h;
   }
   const formaObj: Record<string, number> = {};
   for (const [id, v] of forma.entries()) formaObj[String(id)] = v;
