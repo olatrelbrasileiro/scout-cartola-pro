@@ -175,6 +175,9 @@ function ResultadoEscalacao({ r }: { r: EscalacaoIA }) {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           Titulares
         </h2>
+        <div className="mb-4">
+          <CampoEscalacao titulares={r.titulares} capitao={r.capitao} />
+        </div>
         <div className="space-y-2">
           {titulares.map((t) => {
             const isCap = t.atleta_id === r.capitao;
