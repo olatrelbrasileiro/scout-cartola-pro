@@ -1,9 +1,8 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Loader2, X } from "lucide-react";
 import { Header } from "@/components/Header";
 import { JogadoresTable } from "@/components/JogadoresTable";
-import { ChatPanel } from "@/components/ChatPanel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getDashboardSnapshot } from "@/lib/cartola/api.functions";
@@ -44,7 +43,7 @@ export const Route = createFileRoute("/comparar")({
 function Comparar() {
   const snapshot = Route.useLoaderData();
   const [selecionados, setSelecionados] = useState<Atleta[]>([]);
-  const adv = useMemo(() => adversarioMap(snapshot), [snapshot]);
+  const adv = adversarioMap(snapshot);
 
   const toggle = (a: Atleta) => {
     setSelecionados((prev) => {
@@ -57,17 +56,6 @@ function Comparar() {
   };
 
   const remover = (id: number) => setSelecionados((p) => p.filter((x) => x.atleta_id !== id));
-
-  const contextoIA = useMemo(() => {
-    if (selecionados.length < 2) return undefined;
-    const linhas = selecionados.map((a) => {
-      const clube = snapshot.data.clubes[String(a.clube_id)]?.nome ?? "?";
-      const ad = adv[a.clube_id];
-      const advTxt = ad ? ` próximo: ${ad.adv} (${ad.mando === "casa" ? "casa" : "fora"})` : "";
-      return `${a.apelido} (${POSICAO_NOME[a.posicao_id]}, ${clube}) — preço C$${a.preco_num.toFixed(2)}, média ${a.media_num.toFixed(2)}, última ${a.pontos_num.toFixed(2)}, jogos ${a.jogos_num}, status ${STATUS_MAP[a.status_id]?.label ?? a.status_id}.${advTxt}`;
-    });
-    return `O usuário está comparando estes jogadores:\n${linhas.join("\n")}\n\nDê uma recomendação técnica de qual escolher e por quê.`;
-  }, [selecionados, snapshot, adv]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -137,21 +125,12 @@ function Comparar() {
           </div>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_minmax(360px,420px)]">
-          <JogadoresTable
-            snapshot={snapshot}
-            selectable
-            selected={selecionados.map((s) => s.atleta_id)}
-            onToggleSelect={toggle}
-          />
-          <div className="lg:sticky lg:top-20 lg:h-[calc(100vh-6rem)]">
-            <ChatPanel
-              key={contextoIA ?? "empty"}
-              extraContext={contextoIA}
-              title={selecionados.length >= 2 ? "Análise comparativa" : "Cartola IA"}
-            />
-          </div>
-        </div>
+        <JogadoresTable
+          snapshot={snapshot}
+          selectable
+          selected={selecionados.map((s) => s.atleta_id)}
+          onToggleSelect={toggle}
+        />
       </main>
     </div>
   );
