@@ -25,11 +25,14 @@ function statusVariant(id: number): "default" | "secondary" | "destructive" | "o
   return "outline";
 }
 
+type RodadaRow = { rodada: number; pontuacao: number; jogou: boolean };
+type HistEntry = { rodadas: RodadaRow[] };
+
 export type MercadoData = {
   atletas: AtletaComScore[];
   clubes: Record<string, Clube>;
   partidas: Partida[];
-  historico: Record<string, unknown>;
+  historico: Record<string, HistEntry>;
   formaClube: Record<string, number>;
   rodadasAnalisadas: number[];
 };
@@ -251,6 +254,11 @@ export function MercadoTable({
             const ad = adv.get(aberto.clube_id);
             return ad ? { clube: data.clubes[String(ad.adv_id)], mando: ad.mando } : null;
           })()}
+          historicoRodadas={data.historico[String(aberto.atleta_id)]?.rodadas?.map((r) => ({
+            rodada: r.rodada,
+            pontuacao: r.pontuacao,
+            jogou: r.jogou,
+          }))}
           onClose={() => setAberto(null)}
         />
       )}
