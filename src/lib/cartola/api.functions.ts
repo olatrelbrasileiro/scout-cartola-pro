@@ -38,7 +38,6 @@ import {
   runTemporalEvaluationWithCategorical,
   type MLv1_2_Result,
 } from "@/lib/ml/evaluation.functions";
-import type { MLv1Result } from "@/lib/ml/model.types";
 
 const BASE = "https://api.cartola.globo.com";
 
