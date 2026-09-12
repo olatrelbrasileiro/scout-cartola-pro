@@ -845,10 +845,7 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
     }
 
     // ---- Universo do BACKTEST OFICIAL (runHistoricalBacktest) -------
-    // Replicamos exatamente o filtro + loop do backtest de produção.
-    const eligible = histories.filter((h) =>
-      h.rounds.some((r) => r.participated && r.round < data.firstRound),
-    );
+    // Replicamos exatamente o filtro + loop do backtest de produção
 
     let officialBacktestPredictions = 0;
     const officialUniverse = new Set<string>();
