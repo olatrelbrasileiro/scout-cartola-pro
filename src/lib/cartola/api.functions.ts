@@ -1317,6 +1317,70 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
     };
   });
 
+/* ------------------------------------------------------------------ *
+ * ML v1 — avaliação temporal (temporário)
+ * ------------------------------------------------------------------ */
+
+import { runTemporalEvaluation } from "@/lib/ml/evaluation.functions";
+import type { MLv1Result } from "@/lib/ml/model.types";
+
+const MLv1Input = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+  participationWindow: z.number().int().min(1).max(30).default(12),
+  lambda: z.number().min(0).default(1.0),
+});
+
+export const runMLv1Evaluation = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => MLv1Input.parse(input))
+  .handler(async ({ data }): Promise<MLv1Result> => {
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+              () => ({ rodada: r, atletas: {} }),
+            ),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    return runTemporalEvaluation(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+  });
+
 export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
   const snapshot = await (async (): Promise<DashboardSnapshot> => {
     const [mercado, dataM, partidasRes] = await Promise.all([
