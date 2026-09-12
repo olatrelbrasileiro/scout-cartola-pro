@@ -31,14 +31,12 @@ import { buildTrainingDatasetFromHistories } from "@/lib/ml/features.functions";
 import type { TrainingDataset } from "@/lib/ml/features.types";
 import { predictByRecentAverage } from "@/lib/backtest/baseline";
 import type { CartolaPosition } from "@/lib/data/historical.types";
-import { runTemporalEvaluation } from "@/lib/ml/evaluation.functions";
-import type { MLv1Result } from "@/lib/ml/model.types";
 import {
   runTemporalEvaluation,
   runTemporalEvaluationWithCategorical,
   type MLv1_2_Result,
 } from "@/lib/ml/evaluation.functions";
-
+import type { MLv1Result } from "@/lib/ml/model.types";
 const BASE = "https://api.cartola.globo.com";
 
 type CacheEntry<T> = { value: T; expiresAt: number };
