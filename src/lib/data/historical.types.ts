@@ -6,31 +6,36 @@
 export type CartolaPosition = 'GOL' | 'LAT' | 'ZAG' | 'MEI' | 'ATA' | 'TEC';
 
 /**
- * Scouts brutos retornados pela API do Cartola em uma rodada.
- * Todos opcionais, pois a API só envia as chaves que ocorreram
- * (ou pode omitir o bloco inteiro em alguns casos).
+ * Scouts efetivamente retornados pelo histórico do Cartola
+ * (alinhados com os usados em scoring.ts).
+ *
+ * Observações:
+ * - `FD` = defesa do goleiro.
+ * - `DS` = desarme.
+ * - `I`  = interceptações.
+ * - `DE` (defesa difícil) e `DD` foram removidos do Cartola em 2021
+ *   e por isso NÃO estão aqui.
+ * - Todos opcionais: a API só envia as chaves que ocorreram na rodada.
  */
 export interface CartolaScouts {
   G?: number;   // gols
   A?: number;   // assistências
   FT?: number;  // finalizações na trave
-  FD?: number;  // finalizações defendidas
+  FD?: number;  // defesa do goleiro
   FF?: number;  // finalizações para fora
   FS?: number;  // faltas sofridas
-  FC?: number;  // faltas cometidas
-  I?: number;   // impedimentos
   PP?: number;  // pênaltis perdidos
   PS?: number;  // pênaltis sofridos
-  PC?: number;  // pênaltis cometidos
+  DS?: number;  // desarmes
+  DP?: number;  // defesas de pênalti
+  SG?: number;  // saldo de gols (jogo sem sofrer gol)
+  GS?: number;  // gols sofridos
+  FC?: number;  // faltas cometidas
+  GC?: number;  // gols contra
   CA?: number;  // cartões amarelos
   CV?: number;  // cartões vermelhos
-  SG?: number;  // saldo de gols
-  DD?: number;  // defesas difíceis
-  DP?: number;  // defesas de pênalti
-  GS?: number;  // gols sofridos
-  V?: number;   // vitórias
-  E?: number;   // empates
-  GC?: number;  // gols contra
+  PC?: number;  // pênaltis cometidos
+  I?: number;   // interceptações
 }
 
 /**
