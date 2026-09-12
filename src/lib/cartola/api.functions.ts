@@ -27,6 +27,10 @@ import {
   type MultiPlayerBacktestSummary,
 } from "@/lib/backtest/backtest";
 import { buildPositionSamples } from "./matchup";
+import {
+  buildTrainingDatasetFromHistories,
+} from "@/lib/ml/features.functions";
+import type { TrainingDataset } from "@/lib/ml/features.types";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -297,6 +301,72 @@ export const runMatchupBacktestComparison = createServerFn({ method: "POST" })
     };
   });
 
+/* ------------------------------------------------------------------ *
+ * Dataset de treino para ML
+ * ------------------------------------------------------------------ */
+
+const BuildTrainingDatasetInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+});
+
+/**
+ * Constrói o dataset de treino para o intervalo [firstRound, lastRound].
+ *
+ * Reaproveita:
+ * - cache `pontuados:{r}` (já usado pelo dashboard e backtest);
+ * - cache `partidas:{r}` (novo, 30 min);
+ * - `buildHistoriesFromRawRounds` para normalizar histórico;
+ * - `buildTrainingDatasetFromHistories` para extrair features (puro).
+ *
+ * Nenhuma rodada alvo entra nas features — apenas rodadas < alvo.
+ */
+export const buildTrainingDataset = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => BuildTrainingDatasetInput.parse(input))
+  .handler(async ({ data }): Promise<TrainingDataset> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+              () => ({ rodada: r, atletas: {} }),
+            ),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+
+    return buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+  });
+           
 export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
   const snapshot = await (async (): Promise<DashboardSnapshot> => {
     const [mercado, dataM, partidasRes] = await Promise.all([
