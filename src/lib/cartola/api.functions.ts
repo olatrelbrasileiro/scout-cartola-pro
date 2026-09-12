@@ -982,6 +982,341 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
     };
   });
 
+/* ------------------------------------------------------------------ *
+ * AUDITORIA TEMPORÁRIA: leakage feature a feature
+ * Não altera nenhuma lógica. Diagnóstico estático + verificação
+ * dinâmica sobre o dataset R5–R26.
+ * ------------------------------------------------------------------ */
+
+const FeatureLeakageAuditInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+});
+
+export type FeatureLeakageStatus =
+  | "SAFE"
+  | "UNKNOWN"
+  | "LEAKAGE"
+  | "NOT_APPLICABLE";
+
+export interface FeatureLeakageEntry {
+  feature: string;
+  source: string;
+  temporal: string;
+  status: FeatureLeakageStatus;
+  explanation: string;
+}
+
+export interface AffectedRowSample {
+  playerId: number;
+  round: number;
+  clubIdInTarget: number | null;
+  clubIdInPriorRound: number | null;
+  clubChanged: boolean;
+  positionInTarget: string | null;
+  positionInPriorRound: string | null;
+  positionChanged: boolean;
+}
+
+export interface FeatureLeakageAuditResult {
+  firstRound: number;
+  lastRound: number;
+  summary: {
+    safe: number;
+    unknown: number;
+    leakage: number;
+    notApplicable: number;
+  };
+  entries: FeatureLeakageEntry[];
+  dynamicChecks: {
+    totalRows: number;
+    rowsWithClubChange: number;
+    rowsWithPositionChange: number;
+    rowsWithClubIdMissing: number;
+    rowsWithPositionMissing: number;
+    affectedSample: AffectedRowSample[];
+    maxRoundAudit: { ok: boolean; violationsCount: number };
+  };
+}
+
+/**
+ * Tabela estática de análise. Reflete exatamente o código atual de
+ * features.functions.ts.
+ */
+const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
+  {
+    feature: "clubId",
+    source:
+      "target.clubId ← HistoricalPlayerRound.clubId ← RawPontuadosAtleta.clube_id ← /atletas/pontuados/{round}",
+    temporal: "source is post-round endpoint",
+    status: "UNKNOWN",
+    explanation:
+      "Semanticamente representa o clube do jogador na rodada alvo e costuma ser conhecido antes dela. Porém a única fonte no projeto é o payload pós-rodada de pontuados. Não há snapshot histórico pré-rodada do mercado para reconstruir esse campo. Risco residual concentrado em transferências que mudam o clube exatamente na rodada alvo.",
+  },
+  {
+    feature: "position",
+    source:
+      "target.position ← HistoricalPlayerRound.position ← RawPontuadosAtleta.posicao_id ← /atletas/pontuados/{round}",
+    temporal: "source is post-round endpoint",
+    status: "UNKNOWN",
+    explanation:
+      "Mesmo caso de clubId. Posição é normalmente estável e conhecida, mas a fonte disponível no projeto é pós-rodada.",
+  },
+  {
+    feature: "isHome",
+    source: "fixturesByRound.get(target.round) ← /partidas/{round}",
+    temporal: "fixture scheduling, pre-round content",
+    status: "SAFE",
+    explanation:
+      "O conteúdo (quem joga em casa contra quem) é informação de calendário, publicada com antecedência. O payload é buscado pós-rodada, mas a informação é pré-rodada. Assumimos que o mando não é reatribuído por decisão pós-jogo.",
+  },
+  {
+    feature: "opponentClubId",
+    source: "fixturesByRound.get(target.round) ← /partidas/{round}",
+    temporal: "fixture scheduling, pre-round content",
+    status: "SAFE",
+    explanation: "Mesmo raciocínio de isHome.",
+  },
+  {
+    feature: "games_last_3_rounds",
+    source: "prior = roundsAsc.filter(r => r.round < target.round)",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation:
+      "Contagem de participações em rodadas estritamente anteriores à alvo.",
+  },
+  {
+    feature: "games_last_5_rounds",
+    source: "prior = roundsAsc.filter(r => r.round < target.round)",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "games_last_12_rounds",
+    source: "prior = roundsAsc.filter(r => r.round < target.round)",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_avg_3",
+    source: "mean(pointsOfLastNParticipations(prior, 3))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Média sobre participações em rodadas anteriores à alvo.",
+  },
+  {
+    feature: "points_avg_5",
+    source: "mean(pointsOfLastNParticipations(prior, 5))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_avg_12",
+    source: "mean(pointsOfLastNParticipations(prior, 12))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_std_5",
+    source: "std(pointsOfLastNParticipations(prior, 5))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_std_12",
+    source: "std(pointsOfLastNParticipations(prior, 12))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_min_5",
+    source: "min(pointsOfLastNParticipations(prior, 5))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_max_5",
+    source: "max(pointsOfLastNParticipations(prior, 5))",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "points_avg_3_minus_avg_12",
+    source: "points_avg_3 - points_avg_12",
+    temporal: "derived from pre-round features",
+    status: "SAFE",
+    explanation: "Derivada de duas features já seguras.",
+  },
+  {
+    feature: "home_points_avg",
+    source:
+      "mean sobre participações em prior com fixture de mandante (fixturesByRound.get(r.round) para r < targetRound)",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation:
+      "Todos os insumos são de rodadas anteriores à alvo. Não usa fixture nem clube da rodada alvo.",
+  },
+  {
+    feature: "away_points_avg",
+    source: "simétrico a home_points_avg",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation: "Idem.",
+  },
+  {
+    feature: "rounds_since_last_game",
+    source: "target.round - (última rodada participada em prior)",
+    temporal: "only round < targetRound",
+    status: "SAFE",
+    explanation:
+      "Usa target.round (número da rodada, trivial) menos uma rodada anterior. Sem dependência de dados pós-rodada.",
+  },
+];
+
+export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => FeatureLeakageAuditInput.parse(input))
+  .handler(async ({ data }): Promise<FeatureLeakageAuditResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+              () => ({ rodada: r, atletas: {} }),
+            ),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const byPlayer = new Map<number, HistoricalPlayerHistory>();
+    for (const h of histories) byPlayer.set(h.playerId, h);
+
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    // ---- Verificação dinâmica ------------------------------------
+    let rowsWithClubChange = 0;
+    let rowsWithPositionChange = 0;
+    let rowsWithClubIdMissing = 0;
+    let rowsWithPositionMissing = 0;
+    const affectedSample: AffectedRowSample[] = [];
+
+    for (const row of dataset.rows) {
+      const h = byPlayer.get(row.playerId);
+      if (!h) continue;
+
+      const priorRounds = h.rounds.filter((r) => r.round < row.round);
+      if (priorRounds.length === 0) continue;
+      const lastPrior = priorRounds[priorRounds.length - 1];
+
+      if (row.clubId === null) rowsWithClubIdMissing++;
+      if (row.position === null) rowsWithPositionMissing++;
+
+      const clubChanged =
+        lastPrior.clubId !== undefined &&
+        row.clubId !== null &&
+        lastPrior.clubId !== row.clubId;
+      const positionChanged =
+        lastPrior.position !== undefined &&
+        row.position !== null &&
+        lastPrior.position !== row.position;
+
+      if (clubChanged) rowsWithClubChange++;
+      if (positionChanged) rowsWithPositionChange++;
+
+      if (
+        (clubChanged || positionChanged) &&
+        affectedSample.length < 20
+      ) {
+        affectedSample.push({
+          playerId: row.playerId,
+          round: row.round,
+          clubIdInTarget: row.clubId,
+          clubIdInPriorRound: lastPrior.clubId ?? null,
+          clubChanged,
+          positionInTarget: row.position ?? null,
+          positionInPriorRound: lastPrior.position ?? null,
+          positionChanged,
+        });
+      }
+    }
+
+    // Sanity check da auditoria estrutural já existente.
+    let maxRoundViolations = 0;
+    for (const row of dataset.rows) {
+      if (
+        row.maxRoundUsedByFeatures !== null &&
+        row.maxRoundUsedByFeatures >= row.round
+      ) {
+        maxRoundViolations++;
+      }
+    }
+
+    const summary = FEATURE_LEAKAGE_TABLE.reduce(
+      (acc, e) => {
+        if (e.status === "SAFE") acc.safe++;
+        else if (e.status === "UNKNOWN") acc.unknown++;
+        else if (e.status === "LEAKAGE") acc.leakage++;
+        else acc.notApplicable++;
+        return acc;
+      },
+      { safe: 0, unknown: 0, leakage: 0, notApplicable: 0 },
+    );
+
+    return {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      summary,
+      entries: FEATURE_LEAKAGE_TABLE,
+      dynamicChecks: {
+        totalRows: dataset.rows.length,
+        rowsWithClubChange,
+        rowsWithPositionChange,
+        rowsWithClubIdMissing,
+        rowsWithPositionMissing,
+        affectedSample,
+        maxRoundAudit: {
+          ok: maxRoundViolations === 0,
+          violationsCount: maxRoundViolations,
+        },
+      },
+    };
+  });
+
 export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
   const snapshot = await (async (): Promise<DashboardSnapshot> => {
     const [mercado, dataM, partidasRes] = await Promise.all([
