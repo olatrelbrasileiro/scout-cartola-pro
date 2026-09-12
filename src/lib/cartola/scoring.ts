@@ -74,7 +74,10 @@ export function buildHistoricoPorAtleta(rodadas: RodadaPontuada[]): HistoricoPor
   for (const r of sorted) {
     for (const [idStr, info] of Object.entries(r.atletas)) {
       const id = Number(idStr);
-      const jogou = (info.entrou_em_campo ?? true) && info.pontuacao !== 0;
+      // Participação determinada exclusivamente por `entrou_em_campo` quando disponível.
+      // Fallback: assume `true` quando o campo estiver ausente.
+      // `pontuacao === 0` NÃO implica ausência de participação.
+      const jogou = info.entrou_em_campo ?? true;
       const basica = calcMediaBasicaPontos(info.scout);
       const cur = map.get(id) ?? {
         rodadas: [],
