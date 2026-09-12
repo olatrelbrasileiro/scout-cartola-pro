@@ -8,6 +8,7 @@ import { mae, rmse, pearson } from './metrics';
  * Resultado individual de uma rodada prevista no backtest.
  */
 export interface BacktestRoundResult {
+  playerId: number;
   targetRound: number;
   predicted: number;
   actual: number;
@@ -15,9 +16,7 @@ export interface BacktestRoundResult {
 }
 
 /**
- * Resultado agregado do backtest.
- * `mae`, `rmse` e `pearson` podem ser `null` quando não há amostra
- * suficiente ou quando a variância é nula (no caso de Pearson).
+ * Resultado agregado do backtest (por jogador).
  */
 export interface BacktestResult {
   results: BacktestRoundResult[];
@@ -37,16 +36,15 @@ export interface BacktestOptions {
 
 /**
  * Executa um backtest do baseline `predictByRecentAverage` sobre o
- * histórico de um jogador.
+ * histórico de UM jogador.
  *
  * Regras:
- * - Para prever a rodada alvo R, SOMENTE rodadas < R entram no cálculo.
- *   A própria rodada alvo só é usada como `actual`, evitando data leakage.
+ * - Para prever a rodada alvo R, SOMENTE rodadas < R entram no cálculo
+ *   (sem data leakage).
  * - Apenas rodadas em que o jogador efetivamente participou entram no
- *   backtest, pois o objetivo é avaliar a previsão quando ele joga.
- * - Rodadas sem previsão disponível (baseline retornou `null`) são puladas.
- * - Rodadas fora de [firstRound, lastRound] são ignoradas.
- * - A função é pura: não muta o histórico, não acessa rede nem estado global.
+ *   backtest.
+ * - Rodadas sem previsão (baseline retornou null) são puladas.
+ * - Função pura: não muta o histórico, não acessa rede nem estado global.
  */
 export function runBacktest(
   history: HistoricalPlayerHistory,
@@ -57,23 +55,18 @@ export function runBacktest(
   const results: BacktestRoundResult[] = [];
 
   for (const round of history.rounds) {
-    // Fora da janela de teste.
     if (round.round < firstRound || round.round > lastRound) continue;
-
-    // Só avaliamos rodadas em que o jogador realmente participou.
     if (!round.participated) continue;
 
-    // A previsão usa apenas rodadas ANTERIORES à alvo (sem leakage).
     const predicted = predictByRecentAverage(
       history,
       round.round,
       participationWindow,
     );
-
-    // Sem histórico suficiente para prever -> pula a rodada.
     if (predicted === null) continue;
 
     results.push({
+      playerId: history.playerId,
       targetRound: round.round,
       predicted,
       actual: round.points,
@@ -89,5 +82,63 @@ export function runBacktest(
     mae: mae(predictedValues, actualValues),
     rmse: rmse(predictedValues, actualValues),
     pearson: pearson(predictedValues, actualValues),
+  };
+}
+
+/**
+ * Resumo agregado de um backtest sobre vários jogadores.
+ */
+export interface MultiPlayerBacktestSummary {
+  results: BacktestRoundResult[];
+  mae: number | null;
+  rmse: number | null;
+  pearson: number | null;
+  predictions: number;
+  playersEvaluated: number;
+  firstTargetRound: number | null;
+  lastTargetRound: number | null;
+}
+
+/**
+ * Executa o backtest sobre um conjunto de históricos e agrega.
+ * Reaproveita `runBacktest` por jogador, sem tocar nos históricos.
+ */
+export function runBacktestMulti(
+  histories: HistoricalPlayerHistory[],
+  options: BacktestOptions,
+): MultiPlayerBacktestSummary {
+  const all: BacktestRoundResult[] = [];
+  let playersEvaluated = 0;
+
+  for (const history of histories) {
+    const single = runBacktest(history, options);
+    if (single.results.length === 0) continue;
+    playersEvaluated += 1;
+    for (const r of single.results) all.push(r);
+  }
+
+  const predicted = all.map((r) => r.predicted);
+  const actual = all.map((r) => r.actual);
+
+  let firstTargetRound: number | null = null;
+  let lastTargetRound: number | null = null;
+  for (const r of all) {
+    if (firstTargetRound === null || r.targetRound < firstTargetRound) {
+      firstTargetRound = r.targetRound;
+    }
+    if (lastTargetRound === null || r.targetRound > lastTargetRound) {
+      lastTargetRound = r.targetRound;
+    }
+  }
+
+  return {
+    results: all,
+    mae: mae(predicted, actual),
+    rmse: rmse(predicted, actual),
+    pearson: pearson(predicted, actual),
+    predictions: all.length,
+    playersEvaluated,
+    firstTargetRound,
+    lastTargetRound,
   };
 }
