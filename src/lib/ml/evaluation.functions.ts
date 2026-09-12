@@ -18,7 +18,7 @@ import {
 } from './model.functions';
 
 /**
- * Features numéricas usadas no modelo.
+ * Features numéricas usadas no modelo (lista base).
  *
  * IMPORTANTE: `clubId` e `position` são marcados como UNKNOWN na
  * auditoria de proveniência histórica — vêm do payload pós-rodada de
@@ -82,6 +82,10 @@ function computeMetrics(
   };
 }
 
+/* ================================================================== *
+ * ML v1 / v1.1
+ * ================================================================== */
+
 export function runTemporalEvaluation(
   dataset: TrainingDataset,
   histories: HistoricalPlayerHistory[],
@@ -91,8 +95,6 @@ export function runTemporalEvaluation(
   lambda: number,
   excludeFeatures: readonly string[] = [],
 ): MLv1Result {
-  // Lista efetiva de features numéricas após exclusões.
-  // Default: nenhuma exclusão — comportamento idêntico ao ML v1.
   const numericFeatures = NUMERIC_FEATURES.filter(
     (f) => !excludeFeatures.includes(f),
   );
@@ -116,7 +118,6 @@ export function runTemporalEvaluation(
 
     if (trainRows.length === 0 || testCandidates.length === 0) continue;
 
-    // Filtra teste para linhas onde o baseline prevê (comparação justa).
     const testRows: TrainingFeatureRow[] = [];
     const baselinePreds: number[] = [];
     for (const row of testCandidates) {
@@ -198,6 +199,8 @@ export function runTemporalEvaluation(
     },
     byRound,
   };
+}
+
 /* ================================================================== *
  * ML v1.2 — one-hot encoding temporal para clubId / opponentClubId
  * ================================================================== */
@@ -241,14 +244,13 @@ function buildSortedVocab(values: (number | null)[]): number[] {
  * - vocab[0] é a categoria de referência → vetor all-zero.
  * - vocab[i>0] gera coluna i-1.
  * - valor null ou categoria desconhecida → vetor all-zero.
- *   (Equivalente à categoria de referência. Não usa informação do target.)
  */
 function encodeOneHot(value: number | null, vocab: number[]): number[] {
   const len = Math.max(0, vocab.length - 1);
   const out = new Array<number>(len).fill(0);
   if (value === null) return out;
   const idx = vocab.indexOf(value);
-  if (idx <= 0) return out; // desconhecido OU referência
+  if (idx <= 0) return out;
   out[idx - 1] = 1;
   return out;
 }
@@ -268,11 +270,6 @@ const NUMERIC_FEATURES_V12 = NUMERIC_FEATURES.filter(
  * ML v1.2: mesma avaliação temporal, mas `clubId` e `opponentClubId`
  * viram one-hot por fold. Ridge, λ, padronização, imputação,
  * expanding window e universo permanecem idênticos.
- *
- * A padronização continua sendo aplicada a TODAS as colunas (numéricas,
- * position one-hot e club/opp one-hot) usando média/desvio do treino
- * daquela rodada — mesmo mecanismo do v1/v1.1. A única diferença é a
- * codificação categórica.
  */
 export function runTemporalEvaluationWithCategorical(
   dataset: TrainingDataset,
@@ -321,28 +318,24 @@ export function runTemporalEvaluationWithCategorical(
 
     if (testRows.length === 0) continue;
 
-    // --- Vocabulário ajustado APENAS no treino desta rodada ---------
+    // Vocabulário ajustado APENAS no treino desta rodada
     const clubVocab = buildSortedVocab(trainRows.map((r) => r.clubId));
     const oppVocab = buildSortedVocab(trainRows.map((r) => r.opponentClubId));
 
-    // --- Auditoria: categorias do teste que não estavam no treino ----
+    // Auditoria: categorias do teste que não estavam no treino
     let unknownClubInTest = 0;
     let unknownOpponentInTest = 0;
     for (const r of testRows) {
       if (r.clubId !== null && !clubVocab.includes(r.clubId)) {
         unknownClubInTest++;
       }
-      if (
-        r.opponentClubId !== null &&
-        !oppVocab.includes(r.opponentClubId)
-      ) {
+      if (r.opponentClubId !== null && !oppVocab.includes(r.opponentClubId)) {
         unknownOpponentInTest++;
       }
     }
     totalUnknownClub += unknownClubInTest;
     totalUnknownOpponent += unknownOpponentInTest;
 
-    // --- Constrói vetor: numéricas + position + club + opp ----------
     const buildVec = (row: TrainingFeatureRow): (number | null)[] => {
       const base = extractFeatureVector(row, NUMERIC_FEATURES_V12);
       const clubOh = encodeOneHot(row.clubId, clubVocab);
@@ -373,7 +366,6 @@ export function runTemporalEvaluationWithCategorical(
       baseline: computeMetrics(baselinePreds, actuals),
     });
 
-    // --- featureNames desta rodada (para exibir na UI) --------------
     const roundFeatureNames = [
       ...NUMERIC_FEATURES_V12,
       ...POSITIONS.slice(0, -1).map((p) => `position_${p}`),
@@ -420,8 +412,6 @@ export function runTemporalEvaluationWithCategorical(
     lastRound,
     participationWindow,
     lambda,
-    // Como o vocabulário varia por fold, este array reflete a última
-    // rodada avaliada. O tamanho exato por rodada aparece em `audit`.
     featureNames: lastFeatureNames,
   };
 
@@ -445,5 +435,3 @@ export function runTemporalEvaluationWithCategorical(
     },
   };
 }
-}
-
