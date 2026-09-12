@@ -260,44 +260,50 @@ export const runMatchupBacktestComparison = createServerFn({ method: "POST" })
     // rodadas que possuem clube e posição definidos — sem isso, o
     // baseline rodaria num conjunto maior de pares (player, rodada) do
     // que o matchup, o que enviesaria a comparação.
-    const filteredHistories: HistoricalPlayerHistory[] = histories
-      .map((h) => ({
-        playerId: h.playerId,
-        rounds: h.rounds.filter(
-          (r) => typeof r.clubId === "number" && r.position !== undefined,
-        ),
-      }))
-      .filter((h) => h.rounds.length > 0);
+    // Para uma comparação justa, restringimos ambos os backtests às
+// rodadas que possuem clube e posição definidos — sem isso, o
+// baseline rodaria num conjunto maior de pares (player, rodada) do
+// que o matchup, o que enviesaria a comparação.
+const filteredHistories: HistoricalPlayerHistory[] = histories
+  .map((h) => ({
+    playerId: h.playerId,
+    rounds: h.rounds.filter(
+      (r) => typeof r.clubId === "number" && r.position !== undefined,
+    ),
+  }))
+  .filter((h) => h.rounds.length > 0);
 
-    const eligible = filteredHistories.filter((h) =>
-      h.rounds.some((r) => r.participated && r.round < data.firstRound),
-    );
+// Sem filtro global de elegibilidade: cada (jogador, rodada) é
+// avaliado individualmente. `predictByRecentAverage` retorna null
+// quando não há participação anterior àquela rodada, então o
+// backtest simplesmente pula a linha — sem excluir o jogador
+// inteiro. Assim baseline e variantes de matchup operam sobre
+// exatamente o mesmo universo.
+const baseline = runBacktestMulti(filteredHistories, {
+  firstRound: data.firstRound,
+  lastRound: data.lastRound,
+  participationWindow: data.participationWindow,
+});
 
-    const baseline = runBacktestMulti(eligible, {
-      firstRound: data.firstRound,
-      lastRound: data.lastRound,
-      participationWindow: data.participationWindow,
-    });
+const byWindow = data.matchupWindows.map((w) => ({
+  window: w,
+  summary: runBacktestWithMatchup(filteredHistories, stats, fixturesByRound, {
+    firstRound: data.firstRound,
+    lastRound: data.lastRound,
+    participationWindow: data.participationWindow,
+    matchupWindow: w,
+  }),
+}));
 
-    const byWindow = data.matchupWindows.map((w) => ({
-      window: w,
-      summary: runBacktestWithMatchup(eligible, stats, fixturesByRound, {
-        firstRound: data.firstRound,
-        lastRound: data.lastRound,
-        participationWindow: data.participationWindow,
-        matchupWindow: w,
-      }),
-    }));
-
-    const playersWithMatchupData = new Set<number>();
-    for (const h of eligible) {
-      for (const r of h.rounds) {
-        if (r.participated && r.clubId !== undefined && r.position) {
-          playersWithMatchupData.add(h.playerId);
-          break;
-        }
-      }
+const playersWithMatchupData = new Set<number>();
+for (const h of filteredHistories) {
+  for (const r of h.rounds) {
+    if (r.participated && r.clubId !== undefined && r.position) {
+      playersWithMatchupData.add(h.playerId);
+      break;
     }
+  }
+}
 
     return {
       baseline,
@@ -850,7 +856,7 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
     let officialBacktestPredictions = 0;
     const officialUniverse = new Set<string>();
 
-    for (const h of eligible) {
+    for (const h of histories) {
       for (const r of h.rounds) {
         if (r.round < data.firstRound || r.round > data.lastRound) continue;
         if (!r.participated) continue;
