@@ -32,6 +32,10 @@ import {
 } from "@/lib/ml/features.functions";
 import type { TrainingDataset } from "@/lib/ml/features.types";
 import { predictByRecentAverage } from "@/lib/backtest/baseline";
+import type {
+  CartolaPosition,
+  HistoricalPlayerHistory,
+} from "@/lib/data/historical.types";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -535,6 +539,225 @@ export const auditBaselineVsDataset = createServerFn({ method: "POST" })
         difference: totalDatasetParticipations - totalBaselinePredictions,
       },
       perRound,
+    };
+  });
+
+/* ------------------------------------------------------------------ *
+ * AUDITORIA TEMPORÁRIA: perfil dos jogadores sem participação prévia
+ * Objetivo: entender quem são as linhas "sem prior participation" e se
+ * havia sinal pré-rodada indicando candidatura. Não altera nada.
+ * ------------------------------------------------------------------ */
+
+const AuditNoPriorInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+});
+
+export interface NoPriorPlayerProfile {
+  playerId: number;
+  apelido: string | null;
+  round: number;
+  clubId: number | null;
+  position: CartolaPosition | null;
+  priorAppearancesInPontuados: number;
+  priorRoundsWithEntrouFalse: number;
+  lastSeenRound: number | null;
+  roundsSinceLastSeen: number | null;
+  firstEverAppearanceRound: number | null;
+  isFirstAppearanceEver: boolean;
+  profileType:
+    | "brand_new_in_dataset"
+    | "benched_recently"
+    | "benched_long_ago"
+    | "in_payload_no_bench_flag";
+  currentMarketStatusId: number | null;
+  currentMarketPrice: number | null;
+  currentMarketMedia: number | null;
+  currentMarketJogos: number | null;
+}
+
+export interface NoPriorAuditResult {
+  firstRound: number;
+  lastRound: number;
+  total: number;
+  uniquePlayers: number;
+  byRound: Array<{ round: number; count: number }>;
+  byPosition: Array<{ position: string; count: number }>;
+  byClub: Array<{ clubId: number | null; count: number }>;
+  byProfileType: Array<{ type: string; count: number }>;
+  all: NoPriorPlayerProfile[];
+}
+
+export const auditNoPriorParticipation = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => AuditNoPriorInput.parse(input))
+  .handler(async ({ data }): Promise<NoPriorAuditResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, marketData] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+              () => ({ rodada: r, atletas: {} }),
+            ),
+          ),
+        ),
+      ),
+      cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
+    ]);
+
+    // Índices O(1) para lookup por rodada e por jogador.
+    const presentByRound = new Map<number, Set<number>>();
+    const benchByRound = new Map<number, Set<number>>();
+    const apelidoById = new Map<number, string>();
+    const rawByRound = new Map<number, RawPontuadosRound>();
+
+    for (const rr of rawRounds) {
+      rawByRound.set(rr.rodada, rr);
+      const present = new Set<number>();
+      const bench = new Set<number>();
+      for (const [idStr, atleta] of Object.entries(rr.atletas)) {
+        const id = Number(idStr);
+        if (!Number.isFinite(id)) continue;
+        present.add(id);
+        if (atleta.entrou_em_campo === false) bench.add(id);
+        if (atleta.apelido && !apelidoById.has(id)) {
+          apelidoById.set(id, atleta.apelido);
+        }
+      }
+      presentByRound.set(rr.rodada, present);
+      benchByRound.set(rr.rodada, bench);
+    }
+
+    const marketById = new Map<number, Atleta>();
+    for (const a of marketData.atletas) marketById.set(a.atleta_id, a);
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+
+    const all: NoPriorPlayerProfile[] = [];
+
+    for (const h of histories) {
+      for (const r of h.rounds) {
+        if (r.round < data.firstRound || r.round > data.lastRound) continue;
+        if (!r.participated) continue;
+
+        const prior = h.rounds.filter((x) => x.round < r.round);
+        const priorParticipated = prior.filter((x) => x.participated);
+        if (priorParticipated.length > 0) continue; // tem prior, pula
+
+        const R = r.round;
+        const playerId = r.playerId;
+
+        // Presenças pré-R no payload de pontuados
+        let priorAppearancesInPontuados = 0;
+        let priorRoundsWithEntrouFalse = 0;
+        let lastSeenRound: number | null = null;
+        for (let rr = R - 1; rr >= 1; rr--) {
+          const present = presentByRound.get(rr);
+          if (!present || !present.has(playerId)) continue;
+          priorAppearancesInPontuados++;
+          if (lastSeenRound === null) lastSeenRound = rr;
+          const bench = benchByRound.get(rr);
+          if (bench && bench.has(playerId)) priorRoundsWithEntrouFalse++;
+        }
+
+        // Primeira aparição em toda a série
+        let firstEverAppearanceRound: number | null = null;
+        for (let rr = 1; rr <= data.lastRound; rr++) {
+          const present = presentByRound.get(rr);
+          if (present && present.has(playerId)) {
+            firstEverAppearanceRound = rr;
+            break;
+          }
+        }
+
+        const roundsSinceLastSeen =
+          lastSeenRound === null ? null : R - lastSeenRound;
+        const isFirstAppearanceEver = firstEverAppearanceRound === R;
+
+        let profileType: NoPriorPlayerProfile["profileType"];
+        if (priorAppearancesInPontuados === 0) {
+          profileType = "brand_new_in_dataset";
+        } else if (priorRoundsWithEntrouFalse === 0) {
+          profileType = "in_payload_no_bench_flag";
+        } else if (
+          roundsSinceLastSeen !== null &&
+          roundsSinceLastSeen <= 2
+        ) {
+          profileType = "benched_recently";
+        } else {
+          profileType = "benched_long_ago";
+        }
+
+        const m = marketById.get(playerId);
+
+        all.push({
+          playerId,
+          apelido: apelidoById.get(playerId) ?? m?.apelido ?? null,
+          round: R,
+          clubId: r.clubId ?? null,
+          position: r.position ?? null,
+          priorAppearancesInPontuados,
+          priorRoundsWithEntrouFalse,
+          lastSeenRound,
+          roundsSinceLastSeen,
+          firstEverAppearanceRound,
+          isFirstAppearanceEver,
+          profileType,
+          currentMarketStatusId: m?.status_id ?? null,
+          currentMarketPrice: m?.preco_num ?? null,
+          currentMarketMedia: m?.media_num ?? null,
+          currentMarketJogos: m?.jogos_num ?? null,
+        });
+      }
+    }
+
+    // Agregações
+    const byRoundMap = new Map<number, number>();
+    const byPosMap = new Map<string, number>();
+    const byClubMap = new Map<string, number>();
+    const byTypeMap = new Map<string, number>();
+
+    for (const t of all) {
+      byRoundMap.set(t.round, (byRoundMap.get(t.round) ?? 0) + 1);
+      const pos = t.position ?? "UNKNOWN";
+      byPosMap.set(pos, (byPosMap.get(pos) ?? 0) + 1);
+      const club = t.clubId === null ? "UNKNOWN" : String(t.clubId);
+      byClubMap.set(club, (byClubMap.get(club) ?? 0) + 1);
+      byTypeMap.set(t.profileType, (byTypeMap.get(t.profileType) ?? 0) + 1);
+    }
+
+    const byRound = Array.from(byRoundMap.entries())
+      .map(([round, count]) => ({ round, count }))
+      .sort((a, b) => a.round - b.round);
+    const byPosition = Array.from(byPosMap.entries())
+      .map(([position, count]) => ({ position, count }))
+      .sort((a, b) => b.count - a.count);
+    const byClub = Array.from(byClubMap.entries())
+      .map(([club, count]) => ({
+        clubId: club === "UNKNOWN" ? null : Number(club),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+    const byProfileType = Array.from(byTypeMap.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count);
+
+    return {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      total: all.length,
+      uniquePlayers: new Set(all.map((x) => x.playerId)).size,
+      byRound,
+      byPosition,
+      byClub,
+      byProfileType,
+      all: all.sort((a, b) => a.round - b.round || a.playerId - b.playerId),
     };
   });
 
