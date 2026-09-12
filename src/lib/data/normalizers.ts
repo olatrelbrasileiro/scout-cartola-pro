@@ -9,9 +9,13 @@ import type {
 
 /**
  * Mapeia posicao_id numérico para CartolaPosition de forma segura.
+ * Aceita undefined (endpoints históricos podem não enviar posição).
  * Retorna undefined quando o id não é conhecido.
  */
-function mapPosition(posicaoId: number): CartolaPosition | undefined {
+export function mapPosition(
+  posicaoId: number | undefined,
+): CartolaPosition | undefined {
+  if (typeof posicaoId !== 'number') return undefined;
   const abrev = POSICAO_ABREV[posicaoId];
   if (
     abrev === 'GOL' ||
@@ -28,7 +32,8 @@ function mapPosition(posicaoId: number): CartolaPosition | undefined {
 
 /**
  * Chaves de scout reconhecidas, alinhadas com o histórico atual do Cartola.
- * Mantemos a lista explícita para preservar tipagem estrita em CartolaScouts.
+ * Fonte única de verdade — usada por qualquer pipeline que precise
+ * converter `Record<string, number>` em `CartolaScouts`.
  */
 const KNOWN_SCOUT_KEYS: readonly (keyof CartolaScouts)[] = [
   'G', 'A', 'FT', 'FD', 'FF', 'FS', 'PP', 'PS',
@@ -37,10 +42,15 @@ const KNOWN_SCOUT_KEYS: readonly (keyof CartolaScouts)[] = [
 ];
 
 /**
- * Converte Record<string, number> em CartolaScouts sem usar `any`.
- * Chaves desconhecidas são ignoradas, mantendo o tipo estrito.
+ * Converte um `Record<string, number>` em `CartolaScouts` sem usar `any`.
+ * - Chaves desconhecidas são ignoradas.
+ * - Retorna `undefined` quando a entrada é `undefined` (info indisponível),
+ *   preservando a diferença semântica entre "sem scouts" e "não informado".
  */
-function mapScouts(scout: Record<string, number>): CartolaScouts {
+export function pickScouts(
+  scout: Record<string, number> | undefined,
+): CartolaScouts | undefined {
+  if (!scout) return undefined;
   const result: CartolaScouts = {};
   for (const key of KNOWN_SCOUT_KEYS) {
     const value = scout[key];
@@ -74,6 +84,6 @@ export function toHistoricalPlayerRound(
     participated,
     position: mapPosition(atleta.posicao_id),
     clubId: atleta.clube_id,
-    scouts: mapScouts(atleta.scout),
+    scouts: pickScouts(atleta.scout),
   };
 }
