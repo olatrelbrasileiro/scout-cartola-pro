@@ -33,8 +33,7 @@ import {
 import type { TrainingDataset } from "@/lib/ml/features.types";
 import { predictByRecentAverage } from "@/lib/backtest/baseline";
 import type {
-  CartolaPosition,
-  HistoricalPlayerHistory,
+  CartolaPosition
 } from "@/lib/data/historical.types";
 
 const BASE = "https://api.cartola.globo.com";
