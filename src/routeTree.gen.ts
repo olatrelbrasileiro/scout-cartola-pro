@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as EscalacaoRouteImport } from './routes/escalacao'
 import { Route as CompararRouteImport } from './routes/comparar'
+import { Route as BacktestRouteImport } from './routes/backtest'
 import { Route as IndexRouteImport } from './routes/index'
 
 const EscalacaoRoute = EscalacaoRouteImport.update({
@@ -23,6 +24,11 @@ const CompararRoute = CompararRouteImport.update({
   path: '/comparar',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BacktestRoute = BacktestRouteImport.update({
+  id: '/backtest',
+  path: '/backtest',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -31,30 +37,34 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/backtest': typeof BacktestRoute
   '/comparar': typeof CompararRoute
   '/escalacao': typeof EscalacaoRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/backtest': typeof BacktestRoute
   '/comparar': typeof CompararRoute
   '/escalacao': typeof EscalacaoRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/backtest': typeof BacktestRoute
   '/comparar': typeof CompararRoute
   '/escalacao': typeof EscalacaoRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/comparar' | '/escalacao'
+  fullPaths: '/' | '/backtest' | '/comparar' | '/escalacao'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/comparar' | '/escalacao'
-  id: '__root__' | '/' | '/comparar' | '/escalacao'
+  to: '/' | '/backtest' | '/comparar' | '/escalacao'
+  id: '__root__' | '/' | '/backtest' | '/comparar' | '/escalacao'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  BacktestRoute: typeof BacktestRoute
   CompararRoute: typeof CompararRoute
   EscalacaoRoute: typeof EscalacaoRoute
 }
@@ -75,6 +85,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CompararRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/backtest': {
+      id: '/backtest'
+      path: '/backtest'
+      fullPath: '/backtest'
+      preLoaderRoute: typeof BacktestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  BacktestRoute: BacktestRoute,
   CompararRoute: CompararRoute,
   EscalacaoRoute: EscalacaoRoute,
 }
