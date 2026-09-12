@@ -198,4 +198,252 @@ export function runTemporalEvaluation(
     },
     byRound,
   };
+/* ================================================================== *
+ * ML v1.2 — one-hot encoding temporal para clubId / opponentClubId
+ * ================================================================== */
+
+export interface CategoricalAuditEntry {
+  round: number;
+  trainClubCategories: number;
+  trainOpponentCategories: number;
+  unknownClubInTest: number;
+  unknownOpponentInTest: number;
+  finalFeatureCount: number;
 }
+
+export interface CategoricalAudit {
+  byRound: CategoricalAuditEntry[];
+  summary: {
+    minFinalFeatureCount: number;
+    maxFinalFeatureCount: number;
+    totalUnknownClub: number;
+    totalUnknownOpponent: number;
+  };
+}
+
+export interface MLv1_2_Result extends MLv1Result {
+  audit: CategoricalAudit;
+}
+
+/**
+ * Vocabulário ordenado deterministicamente. A categoria de referência
+ * (drop-one) é o MENOR id presente no treino daquela rodada — escolha
+ * determinística e independente do target.
+ */
+function buildSortedVocab(values: (number | null)[]): number[] {
+  const set = new Set<number>();
+  for (const v of values) if (v !== null) set.add(v);
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * One-hot com drop-one:
+ * - vocab[0] é a categoria de referência → vetor all-zero.
+ * - vocab[i>0] gera coluna i-1.
+ * - valor null ou categoria desconhecida → vetor all-zero.
+ *   (Equivalente à categoria de referência. Não usa informação do target.)
+ */
+function encodeOneHot(value: number | null, vocab: number[]): number[] {
+  const len = Math.max(0, vocab.length - 1);
+  const out = new Array<number>(len).fill(0);
+  if (value === null) return out;
+  const idx = vocab.indexOf(value);
+  if (idx <= 0) return out; // desconhecido OU referência
+  out[idx - 1] = 1;
+  return out;
+}
+
+/**
+ * Features numéricas usadas no v1.2: as mesmas do v1.1 SEM clubId,
+ * SEM opponentClubId e SEM points_avg_3_minus_avg_12.
+ */
+const NUMERIC_FEATURES_V12 = NUMERIC_FEATURES.filter(
+  (f) =>
+    f !== 'clubId' &&
+    f !== 'opponentClubId' &&
+    f !== 'points_avg_3_minus_avg_12',
+);
+
+/**
+ * ML v1.2: mesma avaliação temporal, mas `clubId` e `opponentClubId`
+ * viram one-hot por fold. Ridge, λ, padronização, imputação,
+ * expanding window e universo permanecem idênticos.
+ *
+ * A padronização continua sendo aplicada a TODAS as colunas (numéricas,
+ * position one-hot e club/opp one-hot) usando média/desvio do treino
+ * daquela rodada — mesmo mecanismo do v1/v1.1. A única diferença é a
+ * codificação categórica.
+ */
+export function runTemporalEvaluationWithCategorical(
+  dataset: TrainingDataset,
+  histories: HistoricalPlayerHistory[],
+  firstRound: number,
+  lastRound: number,
+  participationWindow: number,
+  lambda: number,
+): MLv1_2_Result {
+  const historyByPlayer = new Map<number, HistoricalPlayerHistory>();
+  for (const h of histories) historyByPlayer.set(h.playerId, h);
+
+  const allMlPreds: number[] = [];
+  const allBaselinePreds: number[] = [];
+  const allActuals: number[] = [];
+
+  const byRound: RoundEvaluation[] = [];
+  const auditByRound: CategoricalAuditEntry[] = [];
+
+  let lastFeatureNames: string[] = [];
+  let minFinal = Number.POSITIVE_INFINITY;
+  let maxFinal = 0;
+  let totalUnknownClub = 0;
+  let totalUnknownOpponent = 0;
+
+  for (let R = firstRound; R <= lastRound; R++) {
+    const trainRows = dataset.rows.filter(
+      (r) => r.round < R && r.target_participated,
+    );
+    const testCandidates = dataset.rows.filter(
+      (r) => r.round === R && r.target_participated,
+    );
+
+    if (trainRows.length === 0 || testCandidates.length === 0) continue;
+
+    const testRows: TrainingFeatureRow[] = [];
+    const baselinePreds: number[] = [];
+    for (const row of testCandidates) {
+      const h = historyByPlayer.get(row.playerId);
+      if (!h) continue;
+      const pred = predictByRecentAverage(h, R, participationWindow);
+      if (pred === null) continue;
+      testRows.push(row);
+      baselinePreds.push(pred);
+    }
+
+    if (testRows.length === 0) continue;
+
+    // --- Vocabulário ajustado APENAS no treino desta rodada ---------
+    const clubVocab = buildSortedVocab(trainRows.map((r) => r.clubId));
+    const oppVocab = buildSortedVocab(trainRows.map((r) => r.opponentClubId));
+
+    // --- Auditoria: categorias do teste que não estavam no treino ----
+    let unknownClubInTest = 0;
+    let unknownOpponentInTest = 0;
+    for (const r of testRows) {
+      if (r.clubId !== null && !clubVocab.includes(r.clubId)) {
+        unknownClubInTest++;
+      }
+      if (
+        r.opponentClubId !== null &&
+        !oppVocab.includes(r.opponentClubId)
+      ) {
+        unknownOpponentInTest++;
+      }
+    }
+    totalUnknownClub += unknownClubInTest;
+    totalUnknownOpponent += unknownOpponentInTest;
+
+    // --- Constrói vetor: numéricas + position + club + opp ----------
+    const buildVec = (row: TrainingFeatureRow): (number | null)[] => {
+      const base = extractFeatureVector(row, NUMERIC_FEATURES_V12);
+      const clubOh = encodeOneHot(row.clubId, clubVocab);
+      const oppOh = encodeOneHot(row.opponentClubId, oppVocab);
+      return [...base, ...clubOh, ...oppOh];
+    };
+
+    const XtrainRaw = trainRows.map(buildVec);
+    const XtestRaw = testRows.map(buildVec);
+    const yTrain = trainRows.map((r) => r.target_points);
+
+    const { means, stds } = computeMeansAndStds(XtrainRaw);
+    const Xtrain = imputeAndStandardize(XtrainRaw, means, stds);
+    const Xtest = imputeAndStandardize(XtestRaw, means, stds);
+
+    const { weights, intercept } = fitRidge(Xtrain, yTrain, lambda);
+    const mlPreds = predictRidge({ weights, intercept }, Xtest);
+
+    const actuals = testRows.map((r) => r.target_points);
+
+    allMlPreds.push(...mlPreds);
+    allBaselinePreds.push(...baselinePreds);
+    allActuals.push(...actuals);
+
+    byRound.push({
+      round: R,
+      ml: computeMetrics(mlPreds, actuals),
+      baseline: computeMetrics(baselinePreds, actuals),
+    });
+
+    // --- featureNames desta rodada (para exibir na UI) --------------
+    const roundFeatureNames = [
+      ...NUMERIC_FEATURES_V12,
+      ...POSITIONS.slice(0, -1).map((p) => `position_${p}`),
+      ...clubVocab.slice(1).map((c) => `clubId_${c}`),
+      ...oppVocab.slice(1).map((c) => `opponentClubId_${c}`),
+    ];
+    lastFeatureNames = roundFeatureNames;
+
+    const finalFeatureCount = roundFeatureNames.length;
+    if (finalFeatureCount < minFinal) minFinal = finalFeatureCount;
+    if (finalFeatureCount > maxFinal) maxFinal = finalFeatureCount;
+
+    auditByRound.push({
+      round: R,
+      trainClubCategories: clubVocab.length,
+      trainOpponentCategories: oppVocab.length,
+      unknownClubInTest,
+      unknownOpponentInTest,
+      finalFeatureCount,
+    });
+  }
+
+  if (!Number.isFinite(minFinal)) minFinal = 0;
+
+  const mlOverall = computeMetrics(allMlPreds, allActuals);
+  const baselineOverall = computeMetrics(allBaselinePreds, allActuals);
+
+  const maeImprovementPct =
+    mlOverall.mae !== null &&
+    baselineOverall.mae !== null &&
+    baselineOverall.mae > 0
+      ? ((baselineOverall.mae - mlOverall.mae) / baselineOverall.mae) * 100
+      : null;
+
+  const rmseImprovementPct =
+    mlOverall.rmse !== null &&
+    baselineOverall.rmse !== null &&
+    baselineOverall.rmse > 0
+      ? ((baselineOverall.rmse - mlOverall.rmse) / baselineOverall.rmse) * 100
+      : null;
+
+  const config: MLv1Config = {
+    firstRound,
+    lastRound,
+    participationWindow,
+    lambda,
+    // Como o vocabulário varia por fold, este array reflete a última
+    // rodada avaliada. O tamanho exato por rodada aparece em `audit`.
+    featureNames: lastFeatureNames,
+  };
+
+  return {
+    config,
+    overall: {
+      ml: mlOverall,
+      baseline: baselineOverall,
+      maeImprovementPct,
+      rmseImprovementPct,
+    },
+    byRound,
+    audit: {
+      byRound: auditByRound,
+      summary: {
+        minFinalFeatureCount: minFinal,
+        maxFinalFeatureCount: maxFinal,
+        totalUnknownClub,
+        totalUnknownOpponent,
+      },
+    },
+  };
+}
+}
+
