@@ -27,14 +27,10 @@ import {
   type MultiPlayerBacktestSummary,
 } from "@/lib/backtest/backtest";
 import { buildPositionSamples } from "./matchup";
-import {
-  buildTrainingDatasetFromHistories,
-} from "@/lib/ml/features.functions";
+import { buildTrainingDatasetFromHistories } from "@/lib/ml/features.functions";
 import type { TrainingDataset } from "@/lib/ml/features.types";
 import { predictByRecentAverage } from "@/lib/backtest/baseline";
-import type {
-  CartolaPosition
-} from "@/lib/data/historical.types";
+import type { CartolaPosition } from "@/lib/data/historical.types";
 import { runTemporalEvaluation } from "@/lib/ml/evaluation.functions";
 import type { MLv1Result } from "@/lib/ml/model.types";
 
@@ -43,7 +39,11 @@ const BASE = "https://api.cartola.globo.com";
 type CacheEntry<T> = { value: T; expiresAt: number };
 const cache = new Map<string, CacheEntry<unknown>>();
 
-async function cached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
+async function cached<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+): Promise<T> {
   const hit = cache.get(key) as CacheEntry<T> | undefined;
   if (hit && hit.expiresAt > Date.now()) return hit.value;
   const value = await fetcher();
@@ -61,23 +61,29 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const getMercadoStatus = createServerFn({ method: "GET" }).handler(async () => {
-  return cached("status", 60_000, () => getJson<MercadoStatus>("/mercado/status"));
-});
+export const getMercadoStatus = createServerFn({ method: "GET" }).handler(
+  async () => {
+    return cached("status", 60_000, () =>
+      getJson<MercadoStatus>("/mercado/status"),
+    );
+  },
+);
 
-export const getMercadoAtletas = createServerFn({ method: "GET" }).handler(async () => {
-  return cached(
-    "atletas",
-    60_000,
-    () =>
-      getJson<{
-        atletas: Atleta[];
-        clubes: Record<string, Clube>;
-        posicoes: Record<string, Posicao>;
-        status: Record<string, { id: number; nome: string }>;
-      }>("/atletas/mercado"),
-  ) as Promise<MercadoData>;
-});
+export const getMercadoAtletas = createServerFn({ method: "GET" }).handler(
+  async () => {
+    return cached(
+      "atletas",
+      60_000,
+      () =>
+        getJson<{
+          atletas: Atleta[];
+          clubes: Record<string, Clube>;
+          posicoes: Record<string, Posicao>;
+          status: Record<string, { id: number; nome: string }>;
+        }>("/atletas/mercado"),
+    ) as Promise<MercadoData>;
+  },
+);
 
 export const getPartidas = createServerFn({ method: "GET" })
   .inputValidator((d: { rodada?: number }) => d)
@@ -108,14 +114,18 @@ export const getDashboardSnapshot = createServerFn({ method: "GET" }).handler(
       cached("status", 60_000, () => getJson<MercadoStatus>("/mercado/status")),
       cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
       cached("partidas:current", 60_000, () =>
-        getJson<{ partidas: Partida[] }>("/partidas").catch(() => ({ partidas: [] })),
+        getJson<{ partidas: Partida[] }>("/partidas").catch(() => ({
+          partidas: [],
+        })),
       ),
     ]);
     return { mercado, data, partidas: partidasRes.partidas ?? [] };
   },
 );
 
-const HistoricoInput = z.object({ rodadas: z.array(z.number().int().min(1)).min(1).max(8) });
+const HistoricoInput = z.object({
+  rodadas: z.array(z.number().int().min(1)).min(1).max(8),
+});
 
 export const getHistoricoMultiplasRodadas = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => HistoricoInput.parse(input))
@@ -142,18 +152,21 @@ const HistoricoNormalizadoInput = z.object({
 
 export const getHistoricalPlayerHistories = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => HistoricoNormalizadoInput.parse(input))
-  .handler(async ({ data }): Promise<{ histories: HistoricalPlayerHistory[] }> => {
-    const rounds: RawPontuadosRound[] = await Promise.all(
-      data.rodadas.map((r) =>
-        cached(`pontuados:${r}`, 30 * 60_000, () =>
-          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-            () => ({ rodada: r, atletas: {} }),
+  .handler(
+    async ({ data }): Promise<{ histories: HistoricalPlayerHistory[] }> => {
+      const rounds: RawPontuadosRound[] = await Promise.all(
+        data.rodadas.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
-      ),
-    );
-    return { histories: buildHistoriesFromRawRounds(rounds) };
-  });
+      );
+      return { histories: buildHistoriesFromRawRounds(rounds) };
+    },
+  );
 
 const BacktestInput = z.object({
   firstRound: z.number().int().min(1),
@@ -174,26 +187,27 @@ export const runHistoricalBacktest = createServerFn({ method: "POST" })
     const rawRounds: RawPontuadosRound[] = await Promise.all(
       roundsToFetch.map((r) =>
         cached(`pontuados:${r}`, 30 * 60_000, () =>
-          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-            () => ({ rodada: r, atletas: {} }),
-          ),
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+            rodada: r,
+            atletas: {},
+          })),
         ),
       ),
     );
 
     const histories = buildHistoriesFromRawRounds(rawRounds);
 
-// Sem filtro global de elegibilidade: cada (jogador, rodada) é avaliado
-// individualmente. `predictByRecentAverage` já retorna null quando não
-// há nenhuma participação anterior àquela rodada, então o backtest
-// simplesmente pula essas linhas — sem precisar excluir o jogador
-// inteiro. Isso corrige a subcontagem sistemática de previsões para
-// jogadores que estrearam a partir de `firstRound`.
-return runBacktestMulti(histories, {
-  firstRound: data.firstRound,
-  lastRound: data.lastRound,
-  participationWindow: data.participationWindow,
-});
+    // Sem filtro global de elegibilidade: cada (jogador, rodada) é avaliado
+    // individualmente. `predictByRecentAverage` já retorna null quando não
+    // há nenhuma participação anterior àquela rodada, então o backtest
+    // simplesmente pula essas linhas — sem precisar excluir o jogador
+    // inteiro. Isso corrige a subcontagem sistemática de previsões para
+    // jogadores que estrearam a partir de `firstRound`.
+    return runBacktestMulti(histories, {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    });
   });
 
 /* ------------------------------------------------------------------ *
@@ -233,9 +247,10 @@ export const runMatchupBacktestComparison = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
@@ -262,50 +277,46 @@ export const runMatchupBacktestComparison = createServerFn({ method: "POST" })
     // rodadas que possuem clube e posição definidos — sem isso, o
     // baseline rodaria num conjunto maior de pares (player, rodada) do
     // que o matchup, o que enviesaria a comparação.
-    // Para uma comparação justa, restringimos ambos os backtests às
-// rodadas que possuem clube e posição definidos — sem isso, o
-// baseline rodaria num conjunto maior de pares (player, rodada) do
-// que o matchup, o que enviesaria a comparação.
-const filteredHistories: HistoricalPlayerHistory[] = histories
-  .map((h) => ({
-    playerId: h.playerId,
-    rounds: h.rounds.filter(
-      (r) => typeof r.clubId === "number" && r.position !== undefined,
-    ),
-  }))
-  .filter((h) => h.rounds.length > 0);
+    const filteredHistories: HistoricalPlayerHistory[] = histories
+      .map((h) => ({
+        playerId: h.playerId,
+        rounds: h.rounds.filter(
+          (r) => typeof r.clubId === "number" && r.position !== undefined,
+        ),
+      }))
+      .filter((h) => h.rounds.length > 0);
 
-// Sem filtro global de elegibilidade: cada (jogador, rodada) é
-// avaliado individualmente. `predictByRecentAverage` retorna null
-// quando não há participação anterior àquela rodada, então o
-// backtest simplesmente pula a linha — sem excluir o jogador
-// inteiro. Assim baseline e variantes de matchup operam sobre
-// exatamente o mesmo universo.
-const baseline = runBacktestMulti(filteredHistories, {
-  firstRound: data.firstRound,
-  lastRound: data.lastRound,
-  participationWindow: data.participationWindow,
-});
+    // Sem filtro global de elegibilidade: cada (jogador, rodada) é
+    // avaliado individualmente. `predictByRecentAverage` retorna null
+    // quando não há participação anterior àquela rodada, então o
+    // backtest simplesmente pula a linha — sem excluir o jogador
+    // inteiro. Assim baseline e variantes de matchup operam sobre
+    // exatamente o mesmo universo.
+    const baseline = runBacktestMulti(filteredHistories, {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    });
 
-const byWindow = data.matchupWindows.map((w) => ({
-  window: w,
-  summary: runBacktestWithMatchup(filteredHistories, stats, fixturesByRound, {
-    firstRound: data.firstRound,
-    lastRound: data.lastRound,
-    participationWindow: data.participationWindow,
-    matchupWindow: w,
-  }),
-}));
+    const byWindow = data.matchupWindows.map((w) => ({
+      window: w,
+      summary: runBacktestWithMatchup(filteredHistories, stats, fixturesByRound, {
+        firstRound: data.firstRound,
+        lastRound: data.lastRound,
+        participationWindow: data.participationWindow,
+        matchupWindow: w,
+      }),
+    }));
 
-const playersWithMatchupData = new Set<number>();
-for (const h of filteredHistories) {
-  for (const r of h.rounds) {
-    if (r.participated && r.clubId !== undefined && r.position) {
-      playersWithMatchupData.add(h.playerId);
-      break;
+    const playersWithMatchupData = new Set<number>();
+    for (const h of filteredHistories) {
+      for (const r of h.rounds) {
+        if (r.participated && r.clubId !== undefined && r.position) {
+          playersWithMatchupData.add(h.playerId);
+          break;
+        }
+      }
     }
-  }
-}
 
     return {
       baseline,
@@ -349,9 +360,10 @@ export const buildTrainingDataset = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
@@ -383,9 +395,6 @@ export const buildTrainingDataset = createServerFn({ method: "POST" })
 
 /* ------------------------------------------------------------------ *
  * AUDITORIA TEMPORÁRIA: dataset vs baseline
- * Objetivo: explicar a diferença entre participationsOnlyRowCount e o
- * número de predictions do backtest oficial. Não altera nenhuma lógica.
- * Pode ser removida depois que a Etapa 1 for validada.
  * ------------------------------------------------------------------ */
 
 const AuditInput = z.object({
@@ -442,9 +451,10 @@ export const auditBaselineVsDataset = createServerFn({ method: "POST" })
     const rawRounds: RawPontuadosRound[] = await Promise.all(
       roundsToFetch.map((r) =>
         cached(`pontuados:${r}`, 30 * 60_000, () =>
-          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-            () => ({ rodada: r, atletas: {} }),
-          ),
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+            rodada: r,
+            atletas: {},
+          })),
         ),
       ),
     );
@@ -457,7 +467,7 @@ export const auditBaselineVsDataset = createServerFn({ method: "POST" })
       firstRound: data.firstRound,
       lastRound: data.lastRound,
       histories,
-      fixturesByRound: new Map(), // não precisamos de fixtures para esta auditoria
+      fixturesByRound: new Map(),
     });
 
     const perRound: AuditRoundSummary[] = [];
@@ -493,9 +503,7 @@ export const auditBaselineVsDataset = createServerFn({ method: "POST" })
 
         if (predicted === null) {
           const reason =
-            priorParticipated.length === 0
-              ? "no_prior_participation"
-              : "other";
+            priorParticipated.length === 0 ? "no_prior_participation" : "other";
           if (reason === "no_prior_participation") noPriorCount++;
           else otherCount++;
 
@@ -553,8 +561,6 @@ export const auditBaselineVsDataset = createServerFn({ method: "POST" })
 
 /* ------------------------------------------------------------------ *
  * AUDITORIA TEMPORÁRIA: perfil dos jogadores sem participação prévia
- * Objetivo: entender quem são as linhas "sem prior participation" e se
- * havia sinal pré-rodada indicando candidatura. Não altera nada.
  * ------------------------------------------------------------------ */
 
 const AuditNoPriorInput = z.object({
@@ -611,23 +617,21 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
       cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
     ]);
 
-    // Índices O(1) para lookup por rodada e por jogador.
     const presentByRound = new Map<number, Set<number>>();
     const benchByRound = new Map<number, Set<number>>();
     const apelidoById = new Map<number, string>();
-    const rawByRound = new Map<number, RawPontuadosRound>();
 
     for (const rr of rawRounds) {
-      rawByRound.set(rr.rodada, rr);
       const present = new Set<number>();
       const bench = new Set<number>();
       for (const [idStr, atleta] of Object.entries(rr.atletas)) {
@@ -657,12 +661,11 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
 
         const prior = h.rounds.filter((x) => x.round < r.round);
         const priorParticipated = prior.filter((x) => x.participated);
-        if (priorParticipated.length > 0) continue; // tem prior, pula
+        if (priorParticipated.length > 0) continue;
 
         const R = r.round;
         const playerId = r.playerId;
 
-        // Presenças pré-R no payload de pontuados
         let priorAppearancesInPontuados = 0;
         let priorRoundsWithEntrouFalse = 0;
         let lastSeenRound: number | null = null;
@@ -675,7 +678,6 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
           if (bench && bench.has(playerId)) priorRoundsWithEntrouFalse++;
         }
 
-        // Primeira aparição em toda a série
         let firstEverAppearanceRound: number | null = null;
         for (let rr = 1; rr <= data.lastRound; rr++) {
           const present = presentByRound.get(rr);
@@ -694,10 +696,7 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
           profileType = "brand_new_in_dataset";
         } else if (priorRoundsWithEntrouFalse === 0) {
           profileType = "in_payload_no_bench_flag";
-        } else if (
-          roundsSinceLastSeen !== null &&
-          roundsSinceLastSeen <= 2
-        ) {
+        } else if (roundsSinceLastSeen !== null && roundsSinceLastSeen <= 2) {
           profileType = "benched_recently";
         } else {
           profileType = "benched_long_ago";
@@ -726,7 +725,6 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
       }
     }
 
-    // Agregações
     const byRoundMap = new Map<number, number>();
     const byPosMap = new Map<string, number>();
     const byClubMap = new Map<string, number>();
@@ -771,10 +769,7 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
   });
 
 /* ------------------------------------------------------------------ *
- * AUDITORIA TEMPORÁRIA: por que runBacktestMulti produz menos
- * previsões que a auditoria do baseline?
- * Objetivo: provar por contagem que a diferença vem do filtro de
- * elegibilidade em runHistoricalBacktest. Não altera nada.
+ * AUDITORIA TEMPORÁRIA: por que runBacktestMulti produz menos previsões
  * ------------------------------------------------------------------ */
 
 const AuditBacktestDiffInput = z.object({
@@ -818,9 +813,10 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
     const rawRounds: RawPontuadosRound[] = await Promise.all(
       roundsToFetch.map((r) =>
         cached(`pontuados:${r}`, 30 * 60_000, () =>
-          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-            () => ({ rodada: r, atletas: {} }),
-          ),
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+            rodada: r,
+            atletas: {},
+          })),
         ),
       ),
     );
@@ -829,7 +825,6 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
     const byPlayer = new Map<number, HistoricalPlayerHistory>();
     for (const h of histories) byPlayer.set(h.playerId, h);
 
-    // ---- Universo da AUDITORIA (auditBaselineVsDataset) ------------
     let datasetParticipations = 0;
     let baselinePredictions = 0;
     const auditUniverse = new Set<string>();
@@ -852,9 +847,6 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
       }
     }
 
-    // ---- Universo do BACKTEST OFICIAL (runHistoricalBacktest) -------
-    // Replicamos exatamente o filtro + loop do backtest de produção
-
     let officialBacktestPredictions = 0;
     const officialUniverse = new Set<string>();
 
@@ -875,15 +867,11 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
       }
     }
 
-    // ---- Exclusões: em audit mas não em official -------------------
     const exclusions = new Set<string>();
     for (const key of auditUniverse) {
       if (!officialUniverse.has(key)) exclusions.add(key);
     }
 
-    // Pré-inicializa todas as categorias para aparecerem com 0 se não
-    // ocorrerem. `missing_fixture` é listado por completude da taxonomia,
-    // mas runBacktest não consulta fixtures — nunca será motivo real.
     const reasonCounts = new Map<string, number>([
       ["missing_clubId", 0],
       ["missing_position", 0],
@@ -920,8 +908,6 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
       if (roundEntry && roundEntry.position === undefined) {
         reasons.push("missing_position");
       }
-      // missing_fixture: não é checado aqui de propósito — runBacktest
-      // não usa fixtures. Fica sempre 0.
 
       const priorPart = h.rounds.filter(
         (x) => x.participated && x.round < roundNum,
@@ -986,8 +972,6 @@ export const auditBacktestUniverseDifference = createServerFn({ method: "POST" }
 
 /* ------------------------------------------------------------------ *
  * AUDITORIA TEMPORÁRIA: leakage feature a feature
- * Não altera nenhuma lógica. Diagnóstico estático + verificação
- * dinâmica sobre o dataset R5–R26.
  * ------------------------------------------------------------------ */
 
 const FeatureLeakageAuditInput = z.object({
@@ -1041,10 +1025,6 @@ export interface FeatureLeakageAuditResult {
   };
 }
 
-/**
- * Tabela estática de análise. Reflete exatamente o código atual de
- * features.functions.ts.
- */
 const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
   {
     feature: "clubId",
@@ -1053,7 +1033,7 @@ const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
     temporal: "source is post-round endpoint",
     status: "UNKNOWN",
     explanation:
-      "Semanticamente representa o clube do jogador na rodada alvo e costuma ser conhecido antes dela. Porém a única fonte no projeto é o payload pós-rodada de pontuados. Não há snapshot histórico pré-rodada do mercado para reconstruir esse campo. Risco residual concentrado em transferências que mudam o clube exatamente na rodada alvo.",
+      "Semanticamente representa o clube do jogador na rodada alvo. A única fonte no projeto é o payload pós-rodada. Risco residual concentrado em transferências que mudam o clube exatamente na rodada alvo.",
   },
   {
     feature: "position",
@@ -1062,7 +1042,7 @@ const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
     temporal: "source is post-round endpoint",
     status: "UNKNOWN",
     explanation:
-      "Mesmo caso de clubId. Posição é normalmente estável e conhecida, mas a fonte disponível no projeto é pós-rodada.",
+      "Mesmo caso de clubId. Posição é normalmente estável, mas a fonte disponível é pós-rodada.",
   },
   {
     feature: "isHome",
@@ -1070,7 +1050,7 @@ const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
     temporal: "fixture scheduling, pre-round content",
     status: "SAFE",
     explanation:
-      "O conteúdo (quem joga em casa contra quem) é informação de calendário, publicada com antecedência. O payload é buscado pós-rodada, mas a informação é pré-rodada. Assumimos que o mando não é reatribuído por decisão pós-jogo.",
+      "O conteúdo é de calendário, publicado com antecedência. Assumimos que o mando não é reatribuído pós-jogo.",
   },
   {
     feature: "opponentClubId",
@@ -1179,7 +1159,7 @@ const FEATURE_LEAKAGE_TABLE: FeatureLeakageEntry[] = [
     temporal: "only round < targetRound",
     status: "SAFE",
     explanation:
-      "Usa target.round (número da rodada, trivial) menos uma rodada anterior. Sem dependência de dados pós-rodada.",
+      "Usa target.round (número da rodada, trivial) menos uma rodada anterior.",
   },
 ];
 
@@ -1197,9 +1177,10 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
@@ -1230,7 +1211,6 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
       fixturesByRound,
     });
 
-    // ---- Verificação dinâmica ------------------------------------
     let rowsWithClubChange = 0;
     let rowsWithPositionChange = 0;
     let rowsWithClubIdMissing = 0;
@@ -1260,10 +1240,7 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
       if (clubChanged) rowsWithClubChange++;
       if (positionChanged) rowsWithPositionChange++;
 
-      if (
-        (clubChanged || positionChanged) &&
-        affectedSample.length < 20
-      ) {
+      if ((clubChanged || positionChanged) && affectedSample.length < 20) {
         affectedSample.push({
           playerId: row.playerId,
           round: row.round,
@@ -1277,7 +1254,6 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
       }
     }
 
-    // Sanity check da auditoria estrutural já existente.
     let maxRoundViolations = 0;
     for (const row of dataset.rows) {
       if (
@@ -1322,6 +1298,7 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
 /* ------------------------------------------------------------------ *
  * ML v1 — avaliação temporal (temporário)
  * ------------------------------------------------------------------ */
+
 const MLv1Input = z.object({
   firstRound: z.number().int().min(1),
   lastRound: z.number().int().min(1),
@@ -1332,6 +1309,10 @@ const MLv1Input = z.object({
 export const runMLv1Evaluation = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => MLv1Input.parse(input))
   .handler(async ({ data }): Promise<MLv1Result> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
     const roundsToFetch: number[] = [];
     for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
 
@@ -1339,9 +1320,10 @@ export const runMLv1Evaluation = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
@@ -1356,9 +1338,31 @@ export const runMLv1Evaluation = createServerFn({ method: "POST" })
       ),
     ]);
 
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    return runTemporalEvaluation(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+  });
+
 /* ------------------------------------------------------------------ *
- * ML v1.1 — experimento controlado: mesma coisa que v1, mas sem a
- * feature `points_avg_3_minus_avg_12`.
+ * ML v1.1 — experimento controlado: v1 sem `points_avg_3_minus_avg_12`
  * ------------------------------------------------------------------ */
 
 export interface MLv1ComparisonResult {
@@ -1381,9 +1385,10 @@ export const runMLv1_1Comparison = createServerFn({ method: "POST" })
       Promise.all(
         roundsToFetch.map((r) =>
           cached(`pontuados:${r}`, 30 * 60_000, () =>
-            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
-              () => ({ rodada: r, atletas: {} }),
-            ),
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
           ),
         ),
       ),
@@ -1435,72 +1440,62 @@ export const runMLv1_1Comparison = createServerFn({ method: "POST" })
     return { v1, v1_1, excludedFeature: EXCLUDED_FEATURE };
   });
 
-    const fixturesByRound = new Map<number, Partida[]>();
-    roundsToFetch.forEach((r, i) => {
-      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
-    });
+/* ------------------------------------------------------------------ *
+ * Dashboard enriquecido
+ * ------------------------------------------------------------------ */
 
-    const histories = buildHistoriesFromRawRounds(rawRounds);
-    const dataset = buildTrainingDatasetFromHistories({
-      firstRound: data.firstRound,
-      lastRound: data.lastRound,
-      histories,
-      fixturesByRound,
-    });
+export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const snapshot = await (async (): Promise<DashboardSnapshot> => {
+      const [mercado, dataM, partidasRes] = await Promise.all([
+        cached("status", 60_000, () =>
+          getJson<MercadoStatus>("/mercado/status"),
+        ),
+        cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
+        cached("partidas:current", 60_000, () =>
+          getJson<{ partidas: Partida[] }>("/partidas").catch(() => ({
+            partidas: [],
+          })),
+        ),
+      ]);
+      return { mercado, data: dataM, partidas: partidasRes.partidas ?? [] };
+    })();
 
-    return runTemporalEvaluation(
-      dataset,
-      histories,
-      data.firstRound,
-      data.lastRound,
-      data.participationWindow,
-      data.lambda,
+    const rodadaAtual = snapshot.mercado.rodada_atual;
+    const rodadasParaBuscar: number[] = [];
+    const inicio = Math.max(1, rodadaAtual - 12);
+    for (let r = inicio; r < rodadaAtual; r++) rodadasParaBuscar.push(r);
+
+    const rodadas: RodadaPontuada[] = await Promise.all(
+      rodadasParaBuscar.map((r) =>
+        cached(`pontuados:${r}`, 30 * 60_000, () =>
+          getJson<RodadaPontuada>(`/atletas/pontuados/${r}`).catch(() => ({
+            rodada: r,
+            atletas: {},
+          })),
+        ),
+      ),
     );
-  });
 
-export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
-  const snapshot = await (async (): Promise<DashboardSnapshot> => {
-    const [mercado, dataM, partidasRes] = await Promise.all([
-      cached("status", 60_000, () => getJson<MercadoStatus>("/mercado/status")),
-      cached("atletas", 60_000, () => getJson<MercadoData>("/atletas/mercado")),
-      cached("partidas:current", 60_000, () =>
-        getJson<{ partidas: Partida[] }>("/partidas").catch(() => ({ partidas: [] })),
-      ),
-    ]);
-    return { mercado, data: dataM, partidas: partidasRes.partidas ?? [] };
-  })();
+    const { atletas, historico, forma } = enriquecerAtletas(snapshot, rodadas);
 
-  const rodadaAtual = snapshot.mercado.rodada_atual;
-  const rodadasParaBuscar: number[] = [];
-  const inicio = Math.max(1, rodadaAtual - 12);
-  for (let r = inicio; r < rodadaAtual; r++) rodadasParaBuscar.push(r);
+    type HistEntry = ReturnType<HistoricoPorAtleta["get"]>;
+    const histObj: Record<string, NonNullable<HistEntry>> = {};
+    for (const [id, h] of historico.entries()) {
+      histObj[String(id)] = h;
+    }
+    const formaObj: Record<string, number> = {};
+    for (const [id, v] of forma.entries()) formaObj[String(id)] = v;
 
-  const rodadas: RodadaPontuada[] = await Promise.all(
-    rodadasParaBuscar.map((r) =>
-      cached(`pontuados:${r}`, 30 * 60_000, () =>
-        getJson<RodadaPontuada>(`/atletas/pontuados/${r}`).catch(() => ({ rodada: r, atletas: {} })),
-      ),
-    ),
-  );
-
-  const { atletas, historico, forma } = enriquecerAtletas(snapshot, rodadas);
-
-  type HistEntry = ReturnType<HistoricoPorAtleta["get"]>;
-  const histObj: Record<string, NonNullable<HistEntry>> = {};
-  for (const [id, h] of historico.entries()) {
-    histObj[String(id)] = h;
-  }
-  const formaObj: Record<string, number> = {};
-  for (const [id, v] of forma.entries()) formaObj[String(id)] = v;
-
-  return {
-    mercado: snapshot.mercado,
-    clubes: snapshot.data.clubes,
-    posicoes: snapshot.data.posicoes,
-    partidas: snapshot.partidas,
-    atletas,
-    historico: histObj,
-    formaClube: formaObj,
-    rodadasAnalisadas: rodadasParaBuscar,
-  };
-});
+    return {
+      mercado: snapshot.mercado,
+      clubes: snapshot.data.clubes,
+      posicoes: snapshot.data.posicoes,
+      partidas: snapshot.partidas,
+      atletas,
+      historico: histObj,
+      formaClube: formaObj,
+      rodadasAnalisadas: rodadasParaBuscar,
+    };
+  },
+);
