@@ -1,3 +1,5 @@
+// src/lib/cartola/api.functions.ts
+
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type {
@@ -10,6 +12,15 @@ import type {
   Posicao,
 } from "./types";
 import { enriquecerAtletas, type HistoricoPorAtleta, type RodadaPontuada } from "./scoring";
+import type { HistoricalPlayerHistory } from "@/lib/data/historical.types";
+import {
+  buildHistoriesFromRawRounds,
+  type RawPontuadosRound,
+} from "@/lib/data/historical.functions";
+import {
+  runBacktestMulti,
+  type MultiPlayerBacktestSummary,
+} from "@/lib/backtest/backtest";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -107,6 +118,89 @@ export const getHistoricoMultiplasRodadas = createServerFn({ method: "POST" })
       ),
     );
     return { rodadas: results };
+  });
+
+/**
+ * Busca rodadas brutas de /atletas/pontuados/{rodada} e devolve
+ * o histórico normalizado por jogador no formato HistoricalPlayerHistory.
+ *
+ * - Reaproveita o mesmo cache de pontuados já usado pelas telas.
+ * - Não faz cast de AtletaPontuado: a conversão crua é feita em
+ *   buildHistoriesFromRawRounds, que respeita a forma real da API.
+ * - Campos que o endpoint não fornece (preço, variação, etc.)
+ *   permanecem `undefined` no HistoricalPlayerRound.
+ */
+const HistoricoNormalizadoInput = z.object({
+  rodadas: z.array(z.number().int().min(1)).min(1).max(40),
+});
+
+export const getHistoricalPlayerHistories = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => HistoricoNormalizadoInput.parse(input))
+  .handler(async ({ data }): Promise<{ histories: HistoricalPlayerHistory[] }> => {
+    const rounds: RawPontuadosRound[] = await Promise.all(
+      data.rodadas.map((r) =>
+        cached(`pontuados:${r}`, 30 * 60_000, () =>
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+            () => ({ rodada: r, atletas: {} }),
+          ),
+        ),
+      ),
+    );
+    return { histories: buildHistoriesFromRawRounds(rounds) };
+  });
+
+/**
+ * Backtest ponta a ponta:
+ *  1) busca rodadas 1..lastRound via cache;
+ *  2) constrói HistoricalPlayerHistory[] com buildHistoriesFromRawRounds;
+ *  3) filtra jogadores com histórico mínimo e roda runBacktestMulti
+ *     usando o baseline "média das últimas N participações".
+ *
+ * Nenhuma rodada alvo entra na previsão — apenas rodadas < alvo são usadas.
+ * Todos os jogadores elegíveis são avaliados (sem limite arbitrário).
+ */
+const BacktestInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+  participationWindow: z.number().int().min(1).max(20),
+});
+
+export const runHistoricalBacktest = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => BacktestInput.parse(input))
+  .handler(async ({ data }): Promise<MultiPlayerBacktestSummary> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    // Para prever firstRound precisamos de participações anteriores a ele,
+    // então buscamos desde a rodada 1 até lastRound (com cache).
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const rawRounds: RawPontuadosRound[] = await Promise.all(
+      roundsToFetch.map((r) =>
+        cached(`pontuados:${r}`, 30 * 60_000, () =>
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+            () => ({ rodada: r, atletas: {} }),
+          ),
+        ),
+      ),
+    );
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+
+    // Só vale a pena avaliar jogadores com pelo menos 1 participação
+    // antes de `firstRound` (senão o baseline sempre retornaria null).
+    const eligible = histories.filter(
+      (h) =>
+        h.rounds.some((r) => r.participated && r.round < data.firstRound),
+    );
+
+    return runBacktestMulti(eligible, {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    });
   });
 
 /**
