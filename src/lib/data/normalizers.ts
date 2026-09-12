@@ -27,18 +27,22 @@ function mapPosition(posicaoId: number): CartolaPosition | undefined {
 }
 
 /**
+ * Chaves de scout reconhecidas, alinhadas com o histórico atual do Cartola.
+ * Mantemos a lista explícita para preservar tipagem estrita em CartolaScouts.
+ */
+const KNOWN_SCOUT_KEYS: readonly (keyof CartolaScouts)[] = [
+  'G', 'A', 'FT', 'FD', 'FF', 'FS', 'PP', 'PS',
+  'DS', 'DP', 'SG', 'GS', 'FC', 'GC', 'CA', 'CV', 'PC',
+  'I',
+];
+
+/**
  * Converte Record<string, number> em CartolaScouts sem usar `any`.
  * Chaves desconhecidas são ignoradas, mantendo o tipo estrito.
  */
 function mapScouts(scout: Record<string, number>): CartolaScouts {
-  const known: (keyof CartolaScouts)[] = [
-    'G', 'A', 'FT', 'FD', 'FF', 'FS', 'FC', 'I',
-    'PP', 'PS', 'PC', 'CA', 'CV', 'SG', 'DD',
-    'DP', 'GS', 'V', 'E', 'GC',
-  ];
-
   const result: CartolaScouts = {};
-  for (const key of known) {
+  for (const key of KNOWN_SCOUT_KEYS) {
     const value = scout[key];
     if (typeof value === 'number') {
       result[key] = value;
