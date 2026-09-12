@@ -760,6 +760,223 @@ export const auditNoPriorParticipation = createServerFn({ method: "POST" })
     };
   });
 
+/* ------------------------------------------------------------------ *
+ * AUDITORIA TEMPORÁRIA: por que runBacktestMulti produz menos
+ * previsões que a auditoria do baseline?
+ * Objetivo: provar por contagem que a diferença vem do filtro de
+ * elegibilidade em runHistoricalBacktest. Não altera nada.
+ * ------------------------------------------------------------------ */
+
+const AuditBacktestDiffInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+  participationWindow: z.number().int().min(1).max(30).default(12),
+});
+
+export interface BacktestDiffSampleExclusion {
+  playerId: number;
+  round: number;
+  reasons: string[];
+  firstParticipationRound: number | null;
+  priorParticipatedBeforeTarget: number;
+  priorParticipatedBeforeFirstRound: number;
+}
+
+export interface BacktestDiffResult {
+  firstRound: number;
+  lastRound: number;
+  participationWindow: number;
+  datasetParticipations: number;
+  baselinePredictions: number;
+  officialBacktestPredictions: number;
+  difference: number;
+  exclusionsByReason: Array<{ reason: string; count: number }>;
+  exclusionsByRound: Array<{ round: number; count: number }>;
+  sampleExclusions: BacktestDiffSampleExclusion[];
+}
+
+export const auditBacktestUniverseDifference = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => AuditBacktestDiffInput.parse(input))
+  .handler(async ({ data }): Promise<BacktestDiffResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const rawRounds: RawPontuadosRound[] = await Promise.all(
+      roundsToFetch.map((r) =>
+        cached(`pontuados:${r}`, 30 * 60_000, () =>
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+            () => ({ rodada: r, atletas: {} }),
+          ),
+        ),
+      ),
+    );
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const byPlayer = new Map<number, HistoricalPlayerHistory>();
+    for (const h of histories) byPlayer.set(h.playerId, h);
+
+    // ---- Universo da AUDITORIA (auditBaselineVsDataset) ------------
+    let datasetParticipations = 0;
+    let baselinePredictions = 0;
+    const auditUniverse = new Set<string>();
+
+    for (const h of histories) {
+      for (const r of h.rounds) {
+        if (r.round < data.firstRound || r.round > data.lastRound) continue;
+        if (!r.participated) continue;
+        datasetParticipations++;
+
+        const predicted = predictByRecentAverage(
+          h,
+          r.round,
+          data.participationWindow,
+        );
+        if (predicted !== null) {
+          baselinePredictions++;
+          auditUniverse.add(`${h.playerId}:${r.round}`);
+        }
+      }
+    }
+
+    // ---- Universo do BACKTEST OFICIAL (runHistoricalBacktest) -------
+    // Replicamos exatamente o filtro + loop do backtest de produção.
+    const eligible = histories.filter((h) =>
+      h.rounds.some((r) => r.participated && r.round < data.firstRound),
+    );
+
+    let officialBacktestPredictions = 0;
+    const officialUniverse = new Set<string>();
+
+    for (const h of eligible) {
+      for (const r of h.rounds) {
+        if (r.round < data.firstRound || r.round > data.lastRound) continue;
+        if (!r.participated) continue;
+
+        const predicted = predictByRecentAverage(
+          h,
+          r.round,
+          data.participationWindow,
+        );
+        if (predicted === null) continue;
+
+        officialBacktestPredictions++;
+        officialUniverse.add(`${h.playerId}:${r.round}`);
+      }
+    }
+
+    // ---- Exclusões: em audit mas não em official -------------------
+    const exclusions = new Set<string>();
+    for (const key of auditUniverse) {
+      if (!officialUniverse.has(key)) exclusions.add(key);
+    }
+
+    // Pré-inicializa todas as categorias para aparecerem com 0 se não
+    // ocorrerem. `missing_fixture` é listado por completude da taxonomia,
+    // mas runBacktest não consulta fixtures — nunca será motivo real.
+    const reasonCounts = new Map<string, number>([
+      ["missing_clubId", 0],
+      ["missing_position", 0],
+      ["missing_fixture", 0],
+      ["not_participated", 0],
+      ["no_prior_participation", 0],
+      ["invalid_target", 0],
+      ["player_filtered_by_eligible", 0],
+      ["other", 0],
+    ]);
+
+    const roundCounts = new Map<number, number>();
+    const sampleExclusions: BacktestDiffSampleExclusion[] = [];
+
+    for (const key of exclusions) {
+      const [pStr, rStr] = key.split(":");
+      const playerId = Number(pStr);
+      const roundNum = Number(rStr);
+      const h = byPlayer.get(playerId);
+      if (!h) continue;
+
+      const roundEntry = h.rounds.find((x) => x.round === roundNum);
+      const reasons: string[] = [];
+
+      if (!roundEntry || !roundEntry.participated) {
+        reasons.push("not_participated");
+      }
+      if (roundNum < data.firstRound || roundNum > data.lastRound) {
+        reasons.push("invalid_target");
+      }
+      if (roundEntry && roundEntry.clubId === undefined) {
+        reasons.push("missing_clubId");
+      }
+      if (roundEntry && roundEntry.position === undefined) {
+        reasons.push("missing_position");
+      }
+      // missing_fixture: não é checado aqui de propósito — runBacktest
+      // não usa fixtures. Fica sempre 0.
+
+      const priorPart = h.rounds.filter(
+        (x) => x.participated && x.round < roundNum,
+      );
+      if (priorPart.length === 0) {
+        reasons.push("no_prior_participation");
+      }
+
+      const hasPriorBeforeFirstRound = h.rounds.some(
+        (x) => x.participated && x.round < data.firstRound,
+      );
+      if (!hasPriorBeforeFirstRound) {
+        reasons.push("player_filtered_by_eligible");
+      }
+
+      if (reasons.length === 0) {
+        reasons.push("other");
+      }
+
+      for (const reason of reasons) {
+        reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+      }
+      roundCounts.set(roundNum, (roundCounts.get(roundNum) ?? 0) + 1);
+
+      if (sampleExclusions.length < 20) {
+        const firstPart = h.rounds.find((x) => x.participated);
+        sampleExclusions.push({
+          playerId,
+          round: roundNum,
+          reasons,
+          firstParticipationRound: firstPart?.round ?? null,
+          priorParticipatedBeforeTarget: priorPart.length,
+          priorParticipatedBeforeFirstRound: h.rounds.filter(
+            (x) => x.participated && x.round < data.firstRound,
+          ).length,
+        });
+      }
+    }
+
+    const exclusionsByReason = Array.from(reasonCounts.entries())
+      .filter(([, count]) => count > 0)
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const exclusionsByRound = Array.from(roundCounts.entries())
+      .map(([round, count]) => ({ round, count }))
+      .sort((a, b) => a.round - b.round);
+
+    return {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+      datasetParticipations,
+      baselinePredictions,
+      officialBacktestPredictions,
+      difference: baselinePredictions - officialBacktestPredictions,
+      exclusionsByReason,
+      exclusionsByRound,
+      sampleExclusions,
+    };
+  });
+
 export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
   const snapshot = await (async (): Promise<DashboardSnapshot> => {
     const [mercado, dataM, partidasRes] = await Promise.all([
