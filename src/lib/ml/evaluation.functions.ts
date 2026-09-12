@@ -47,10 +47,14 @@ const NUMERIC_FEATURES = [
 const POSITIONS = ['GOL', 'LAT', 'ZAG', 'MEI', 'ATA', 'TEC'] as const;
 // one-hot: 5 dummies (TEC é a categoria de referência)
 
-function extractFeatureVector(row: TrainingFeatureRow): (number | null)[] {
+function extractFeatureVector(
+  row: TrainingFeatureRow,
+  numericFeatures: readonly string[],
+): (number | null)[] {
   const out: (number | null)[] = [];
-  for (const f of NUMERIC_FEATURES) {
-    const v = (row as unknown as Record<string, unknown>)[f];
+  const rec = row as unknown as Record<string, unknown>;
+  for (const f of numericFeatures) {
+    const v = rec[f];
     if (typeof v === 'number') out.push(v);
     else if (typeof v === 'boolean') out.push(v ? 1 : 0);
     else out.push(null);
@@ -85,7 +89,14 @@ export function runTemporalEvaluation(
   lastRound: number,
   participationWindow: number,
   lambda: number,
+  excludeFeatures: readonly string[] = [],
 ): MLv1Result {
+  // Lista efetiva de features numéricas após exclusões.
+  // Default: nenhuma exclusão — comportamento idêntico ao ML v1.
+  const numericFeatures = NUMERIC_FEATURES.filter(
+    (f) => !excludeFeatures.includes(f),
+  );
+
   const historyByPlayer = new Map<number, HistoricalPlayerHistory>();
   for (const h of histories) historyByPlayer.set(h.playerId, h);
 
@@ -105,7 +116,7 @@ export function runTemporalEvaluation(
 
     if (trainRows.length === 0 || testCandidates.length === 0) continue;
 
-    // Filtra teste para linhas onde o baseline prevê (comparação justa)
+    // Filtra teste para linhas onde o baseline prevê (comparação justa).
     const testRows: TrainingFeatureRow[] = [];
     const baselinePreds: number[] = [];
     for (const row of testCandidates) {
@@ -119,9 +130,13 @@ export function runTemporalEvaluation(
 
     if (testRows.length === 0) continue;
 
-    const XtrainRaw = trainRows.map(extractFeatureVector);
+    const XtrainRaw = trainRows.map((r) =>
+      extractFeatureVector(r, numericFeatures),
+    );
     const yTrain = trainRows.map((r) => r.target_points);
-    const XtestRaw = testRows.map(extractFeatureVector);
+    const XtestRaw = testRows.map((r) =>
+      extractFeatureVector(r, numericFeatures),
+    );
 
     const { means, stds } = computeMeansAndStds(XtrainRaw);
     const Xtrain = imputeAndStandardize(XtrainRaw, means, stds);
@@ -147,17 +162,21 @@ export function runTemporalEvaluation(
   const baselineOverall = computeMetrics(allBaselinePreds, allActuals);
 
   const maeImprovementPct =
-    mlOverall.mae !== null && baselineOverall.mae !== null && baselineOverall.mae > 0
+    mlOverall.mae !== null &&
+    baselineOverall.mae !== null &&
+    baselineOverall.mae > 0
       ? ((baselineOverall.mae - mlOverall.mae) / baselineOverall.mae) * 100
       : null;
 
   const rmseImprovementPct =
-    mlOverall.rmse !== null && baselineOverall.rmse !== null && baselineOverall.rmse > 0
+    mlOverall.rmse !== null &&
+    baselineOverall.rmse !== null &&
+    baselineOverall.rmse > 0
       ? ((baselineOverall.rmse - mlOverall.rmse) / baselineOverall.rmse) * 100
       : null;
 
   const featureNames = [
-    ...NUMERIC_FEATURES,
+    ...numericFeatures,
     ...POSITIONS.slice(0, -1).map((p) => `position_${p}`),
   ];
 
