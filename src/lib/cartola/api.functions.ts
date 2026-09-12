@@ -33,6 +33,12 @@ import { predictByRecentAverage } from "@/lib/backtest/baseline";
 import type { CartolaPosition } from "@/lib/data/historical.types";
 import { runTemporalEvaluation } from "@/lib/ml/evaluation.functions";
 import type { MLv1Result } from "@/lib/ml/model.types";
+import {
+  runTemporalEvaluation,
+  runTemporalEvaluationWithCategorical,
+  type MLv1_2_Result,
+} from "@/lib/ml/evaluation.functions";
+import type { MLv1Result } from "@/lib/ml/model.types";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -1438,6 +1444,93 @@ export const runMLv1_1Comparison = createServerFn({ method: "POST" })
     );
 
     return { v1, v1_1, excludedFeature: EXCLUDED_FEATURE };
+  });
+/* ------------------------------------------------------------------ *
+ * ML v1.2 — one-hot temporal de clubId / opponentClubId
+ * ------------------------------------------------------------------ */
+
+export interface MLv12ComparisonResult {
+  v1: MLv1Result;
+  v1_1: MLv1Result;
+  v1_2: MLv1_2_Result;
+}
+
+export const runMLv1_2Comparison = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => MLv1Input.parse(input))
+  .handler(async ({ data }): Promise<MLv12ComparisonResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    const EXCLUDED_FEATURE = "points_avg_3_minus_avg_12";
+
+    const v1 = runTemporalEvaluation(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    const v1_1 = runTemporalEvaluation(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+      [EXCLUDED_FEATURE],
+    );
+
+    const v1_2 = runTemporalEvaluationWithCategorical(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    return { v1, v1_1, v1_2 };
   });
 
 /* ------------------------------------------------------------------ *
