@@ -31,6 +31,7 @@ import {
   buildTrainingDatasetFromHistories,
 } from "@/lib/ml/features.functions";
 import type { TrainingDataset } from "@/lib/ml/features.types";
+import { predictByRecentAverage } from "@/lib/backtest/baseline";
 
 const BASE = "https://api.cartola.globo.com";
 
@@ -366,7 +367,177 @@ export const buildTrainingDataset = createServerFn({ method: "POST" })
       fixturesByRound,
     });
   });
-           
+
+/* ------------------------------------------------------------------ *
+ * AUDITORIA TEMPORÁRIA: dataset vs baseline
+ * Objetivo: explicar a diferença entre participationsOnlyRowCount e o
+ * número de predictions do backtest oficial. Não altera nenhuma lógica.
+ * Pode ser removida depois que a Etapa 1 for validada.
+ * ------------------------------------------------------------------ */
+
+const AuditInput = z.object({
+  firstRound: z.number().int().min(1),
+  lastRound: z.number().int().min(1),
+  participationWindow: z.number().int().min(1).max(30).default(12),
+});
+
+export interface AuditExcludedSample {
+  playerId: number;
+  reason: string;
+  historyRoundsCount: number;
+  priorRoundsCount: number;
+  priorParticipatedCount: number;
+  hasAnyParticipationBefore: boolean;
+}
+
+export interface AuditRoundSummary {
+  round: number;
+  datasetParticipations: number;
+  baselinePredictions: number;
+  difference: number;
+  exclusionReasons: {
+    noPriorParticipation: number;
+    other: number;
+  };
+  priorParticipatedCountDistribution: Record<string, number>;
+  excludedSample: AuditExcludedSample[];
+}
+
+export interface AuditResult {
+  firstRound: number;
+  lastRound: number;
+  participationWindow: number;
+  totals: {
+    rowCount: number;
+    datasetParticipations: number;
+    baselinePredictions: number;
+    difference: number;
+  };
+  perRound: AuditRoundSummary[];
+}
+
+export const auditBaselineVsDataset = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => AuditInput.parse(input))
+  .handler(async ({ data }): Promise<AuditResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const rawRounds: RawPontuadosRound[] = await Promise.all(
+      roundsToFetch.map((r) =>
+        cached(`pontuados:${r}`, 30 * 60_000, () =>
+          getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(
+            () => ({ rodada: r, atletas: {} }),
+          ),
+        ),
+      ),
+    );
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const byPlayer = new Map<number, HistoricalPlayerHistory>();
+    for (const h of histories) byPlayer.set(h.playerId, h);
+
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound: new Map(), // não precisamos de fixtures para esta auditoria
+    });
+
+    const perRound: AuditRoundSummary[] = [];
+
+    for (let R = data.firstRound; R <= data.lastRound; R++) {
+      const datasetRows = dataset.rows.filter(
+        (row) => row.round === R && row.target_participated,
+      );
+
+      let baselinePredictions = 0;
+      let noPriorCount = 0;
+      let otherCount = 0;
+      const distribution: Record<string, number> = {};
+      const excludedSample: AuditExcludedSample[] = [];
+
+      for (const row of datasetRows) {
+        const history = byPlayer.get(row.playerId);
+        if (!history) {
+          otherCount++;
+          continue;
+        }
+
+        const prior = history.rounds.filter((r) => r.round < R);
+        const priorParticipated = prior.filter((r) => r.participated);
+        const bucket = String(priorParticipated.length);
+        distribution[bucket] = (distribution[bucket] ?? 0) + 1;
+
+        const predicted = predictByRecentAverage(
+          history,
+          R,
+          data.participationWindow,
+        );
+
+        if (predicted === null) {
+          const reason =
+            priorParticipated.length === 0
+              ? "no_prior_participation"
+              : "other";
+          if (reason === "no_prior_participation") noPriorCount++;
+          else otherCount++;
+
+          if (excludedSample.length < 8) {
+            excludedSample.push({
+              playerId: row.playerId,
+              reason,
+              historyRoundsCount: history.rounds.length,
+              priorRoundsCount: prior.length,
+              priorParticipatedCount: priorParticipated.length,
+              hasAnyParticipationBefore: priorParticipated.length > 0,
+            });
+          }
+        } else {
+          baselinePredictions++;
+        }
+      }
+
+      perRound.push({
+        round: R,
+        datasetParticipations: datasetRows.length,
+        baselinePredictions,
+        difference: datasetRows.length - baselinePredictions,
+        exclusionReasons: {
+          noPriorParticipation: noPriorCount,
+          other: otherCount,
+        },
+        priorParticipatedCountDistribution: distribution,
+        excludedSample,
+      });
+    }
+
+    const totalDatasetParticipations = perRound.reduce(
+      (s, r) => s + r.datasetParticipations,
+      0,
+    );
+    const totalBaselinePredictions = perRound.reduce(
+      (s, r) => s + r.baselinePredictions,
+      0,
+    );
+
+    return {
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+      totals: {
+        rowCount: dataset.metadata.rowCount,
+        datasetParticipations: totalDatasetParticipations,
+        baselinePredictions: totalBaselinePredictions,
+        difference: totalDatasetParticipations - totalBaselinePredictions,
+      },
+      perRound,
+    };
+  });
+
 export const getDashboardEnriquecido = createServerFn({ method: "GET" }).handler(async () => {
   const snapshot = await (async (): Promise<DashboardSnapshot> => {
     const [mercado, dataM, partidasRes] = await Promise.all([
