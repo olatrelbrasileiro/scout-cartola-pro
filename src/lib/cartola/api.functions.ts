@@ -1322,10 +1322,6 @@ export const auditFeatureLeakageDetailed = createServerFn({ method: "POST" })
 /* ------------------------------------------------------------------ *
  * ML v1 — avaliação temporal (temporário)
  * ------------------------------------------------------------------ */
-
-import { runTemporalEvaluation } from "@/lib/ml/evaluation.functions";
-import type { MLv1Result } from "@/lib/ml/model.types";
-
 const MLv1Input = z.object({
   firstRound: z.number().int().min(1),
   lastRound: z.number().int().min(1),
