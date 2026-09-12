@@ -181,15 +181,17 @@ export const runHistoricalBacktest = createServerFn({ method: "POST" })
 
     const histories = buildHistoriesFromRawRounds(rawRounds);
 
-    const eligible = histories.filter((h) =>
-      h.rounds.some((r) => r.participated && r.round < data.firstRound),
-    );
-
-    return runBacktestMulti(eligible, {
-      firstRound: data.firstRound,
-      lastRound: data.lastRound,
-      participationWindow: data.participationWindow,
-    });
+// Sem filtro global de elegibilidade: cada (jogador, rodada) é avaliado
+// individualmente. `predictByRecentAverage` já retorna null quando não
+// há nenhuma participação anterior àquela rodada, então o backtest
+// simplesmente pula essas linhas — sem precisar excluir o jogador
+// inteiro. Isso corrige a subcontagem sistemática de previsões para
+// jogadores que estrearam a partir de `firstRound`.
+return runBacktestMulti(histories, {
+  firstRound: data.firstRound,
+  lastRound: data.lastRound,
+  participationWindow: data.participationWindow,
+});
   });
 
 /* ------------------------------------------------------------------ *
