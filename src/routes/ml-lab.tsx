@@ -10,9 +10,11 @@ import type { LabRunResult } from "@/lib/ml/lab.functions";
 import {
   FEATURE_CATALOG,
   type FeatureSearchResult,
+  type PositionRankings,
   type SearchMetric,
   type SearchStrategy,
 } from "@/lib/ml/search.functions";
+
 /* ---------------- Constantes de features ---------------- */
 
 const NUMERIC_FEATURES_ALL: string[] = [
@@ -1411,8 +1413,183 @@ function FeatureSearchSection() {
           <p className="text-[10px] text-muted-foreground">
             Assinatura do contexto: <code>{result.signature}</code>
           </p>
+
+          {/* ===== Rankings por posição ===== */}
+          {result.positionRankings.length > 0 && (
+            <PositionRankingsSection rankings={result.positionRankings} />
+          )}
         </div>
       )}
     </section>
+  );
+}
+
+/* ---------------- Rankings por posição ---------------- */
+
+function PositionRankingsSection({
+  rankings,
+}: {
+  rankings: PositionRankings[];
+}) {
+  const POSITION_ICON: Record<string, string> = {
+    GOL: "🧤",
+    LAT: "🏃",
+    ZAG: "🧱",
+    MEI: "🎯",
+    ATA: "⚡",
+    TEC: "🧑‍🏫",
+    __UNKNOWN__: "❓",
+  };
+
+  function label(pos: string): string {
+    return pos === "__UNKNOWN__" ? "— (sem posição)" : pos;
+  }
+
+  return (
+    <div className="space-y-4">
+      <header>
+        <h3 className="mb-1 text-lg font-bold">
+          Melhores combinações por posição
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Rankings derivados dos mesmos experimentos executados. O Ridge NÃO
+          é reexecutado por posição — a divisão acontece sobre as previsões
+          já calculadas. São exploratórios e podem sofrer overfitting ao
+          período histórico utilizado. Servem para identificar padrões que
+          mereçam validação posterior; não afirmam que uma combinação é
+          definitivamente melhor fora do período.
+        </p>
+      </header>
+
+      {/* Resumo */}
+      <div>
+        <h4 className="mb-2 font-semibold">Resumo</h4>
+        <div className="overflow-x-auto rounded border">
+          <table className="min-w-full text-xs">
+            <thead className="bg-muted">
+              <tr>
+                <th className="border-b px-2 py-2 text-left">Posição</th>
+                <th className="border-b px-2 py-2 text-right">Predições</th>
+                <th className="border-b px-2 py-2 text-right">Melhor MAE</th>
+                <th className="border-b px-2 py-2 text-right">Melhor RMSE</th>
+                <th className="border-b px-2 py-2 text-right">
+                  Melhor Pearson
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rankings.map((r) => (
+                <tr key={r.position}>
+                  <td className="border-b px-2 py-1 font-mono">
+                    {POSITION_ICON[r.position] ?? ""} {label(r.position)}
+                  </td>
+                  <td className="border-b px-2 py-1 text-right">
+                    {r.predictions}
+                  </td>
+                  <td className="border-b px-2 py-1 text-right">
+                    {r.bestMae?.toFixed(4) ?? "—"}
+                  </td>
+                  <td className="border-b px-2 py-1 text-right">
+                    {r.bestRmse?.toFixed(4) ?? "—"}
+                  </td>
+                  <td className="border-b px-2 py-1 text-right">
+                    {r.bestPearson?.toFixed(4) ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* TOP 10 + Frequência por posição */}
+      {rankings.map((r) => (
+        <details key={r.position} className="rounded border">
+          <summary className="cursor-pointer bg-muted px-3 py-2 text-sm font-semibold">
+            {POSITION_ICON[r.position] ?? ""} {label(r.position)} — TOP 10
+          </summary>
+          <div className="space-y-3 p-3">
+            <div className="space-y-1">
+              {r.top.map((e) => (
+                <div
+                  key={e.featureIds.join("|")}
+                  className="rounded border p-2 text-xs"
+                >
+                  <div className="font-semibold">
+                    #{e.rank} — MAE {e.mae?.toFixed(4) ?? "—"} · RMSE{" "}
+                    {e.rmse?.toFixed(4) ?? "—"} · Pearson{" "}
+                    {e.pearson?.toFixed(4) ?? "—"} · {e.featureCount} feats ·{" "}
+                    {e.predictions} preds{" "}
+                    {e.robust ? "🟢 ROBUSTA" : "🟠 INSTÁVEL"}
+                  </div>
+                  <div className="font-mono text-[10px] text-muted-foreground">
+                    {e.featureIds.join(" | ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <h5 className="mb-1 text-xs font-semibold">
+                Frequência no TOP 10 — {label(r.position)}
+              </h5>
+              <div className="overflow-x-auto rounded border">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-muted">
+                    <tr>
+                      <th className="border-b px-2 py-1 text-left">feature</th>
+                      <th className="border-b px-2 py-1 text-right">count</th>
+                      <th className="border-b px-2 py-1 text-right">%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.frequency
+                      .filter((f) => f.countTop > 0)
+                      .slice(0, 20)
+                      .map((f) => (
+                        <tr key={f.featureId}>
+                          <td className="border-b px-2 py-1 font-mono">
+                            {f.featureId}
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {f.countTop}/10
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {(f.pctTop * 100).toFixed(0)}%
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </details>
+      ))}
+
+      {/* Auditoria simples */}
+      <details className="rounded border border-amber-200 bg-amber-50">
+        <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-amber-900">
+          Auditoria — rankings por posição
+        </summary>
+        <div className="space-y-1 p-3 text-xs text-amber-900">
+          {rankings.map((r) => {
+            const badMetrics =
+              (r.bestMae !== null && !Number.isFinite(r.bestMae)) ||
+              (r.bestRmse !== null && !Number.isFinite(r.bestRmse)) ||
+              (r.bestPearson !== null && !Number.isFinite(r.bestPearson));
+            const badPred = !Number.isInteger(r.predictions) || r.predictions < 0;
+            return (
+              <div key={r.position}>
+                <strong>{label(r.position)}</strong> — preds={" "}
+                {r.predictions} ({badPred ? "❌" : "OK"}) · métricas={" "}
+                {badMetrics ? "❌ NaN/Inf" : "OK"} · experimentos elegíveis={" "}
+                {r.top.length > 0 ? ">0" : "0"}
+              </div>
+            );
+          })}
+        </div>
+      </details>
+    </div>
   );
 }
