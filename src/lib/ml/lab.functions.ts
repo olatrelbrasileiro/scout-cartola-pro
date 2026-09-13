@@ -6,7 +6,12 @@ import type {
 } from '@/lib/data/historical.types';
 import { predictByRecentAverage } from '@/lib/backtest/baseline';
 import type { TrainingDataset, TrainingFeatureRow } from './features.types';
-import type { MLv1Config, MLv1Result, RoundEvaluation } from './model.types';
+import type {
+  EvaluationMetrics,
+  MLv1Config,
+  MLv1Result,
+  RoundEvaluation,
+} from './model.types';
 import {
   computeMeansAndStds,
   fitRidge,
@@ -59,6 +64,15 @@ export interface LabAudit {
 export interface LabResult extends MLv1Result {
   totalFeatures: number;
   audit: LabAudit;
+  /**
+   * Métricas diagnósticas por posição. Chaves: 'GOL' | 'LAT' | 'ZAG' |
+   * 'MEI' | 'ATA' | 'TEC' | '__UNKNOWN__'.
+   *
+   * NÃO altera `overall` nem participa do ranking do Feature Search.
+   * A posição considerada é a posição real da linha de TESTE daquela
+   * participação.
+   */
+  byPosition: Record<string, EvaluationMetrics>;
 }
 
 export interface LabRunResult {
@@ -168,6 +182,10 @@ export function runConfigurableMLEvaluation(
 
   let lastClubVocabSize = 0;
   let lastOppVocabSize = 0;
+
+  // Acumulador por posição. Alimentado em paralelo, sem tocar em
+  // allMlPreds/allActuals.
+  const posAcc = new Map<string, { preds: number[]; actuals: number[] }>();
 
   for (let R = firstRound; R <= lastRound; R++) {
     const trainRows = dataset.rows.filter(
@@ -326,6 +344,18 @@ export function runConfigurableMLEvaluation(
     allBaselinePreds.push(...baselinePreds);
     allActuals.push(...actuals);
 
+    // Espelho por posição (não altera overall)
+    for (let i = 0; i < testRows.length; i++) {
+      const key = testRows[i].position ?? '__UNKNOWN__';
+      let acc = posAcc.get(key);
+      if (!acc) {
+        acc = { preds: [], actuals: [] };
+        posAcc.set(key, acc);
+      }
+      acc.preds.push(mlPreds[i]);
+      acc.actuals.push(actuals[i]);
+    }
+
     byRound.push({
       round: R,
       ml: computeMetrics(mlPreds, actuals),
@@ -384,6 +414,11 @@ export function runConfigurableMLEvaluation(
   const categoricalOk =
     uca && ucnak && krefnu && knrefnu && uoa && uonak && korefnu && konrefnu;
 
+  const byPosition: Record<string, EvaluationMetrics> = {};
+  for (const [pos, acc] of posAcc) {
+    byPosition[pos] = computeMetrics(acc.preds, acc.actuals);
+  }
+
   return {
     config: configOut,
     overall: {
@@ -424,6 +459,7 @@ export function runConfigurableMLEvaluation(
       },
       failures,
     },
+    byPosition,
   };
 }
 
