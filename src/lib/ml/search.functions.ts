@@ -102,7 +102,7 @@ export const FEATURE_CATALOG: FeatureCatalogEntry[] = [
     id: 'position',
     name: 'position',
     group: 'position',
-    description: 'One-hot de posição (drop-TEC)',
+    description: 'One-hot de posição (drop-TEC). Excluída automaticamente em buscas por posição.',
   },
   ...V21_SCOUTS.flatMap<FeatureCatalogEntry>((s) =>
     V21_AGGREGATES.map((a) => ({
@@ -136,6 +136,14 @@ export const V12A_FEATURE_IDS: readonly string[] = [
   'clubId',
   'opponentClubId',
   'position',
+];
+
+export const DEFAULT_POSITION_SEARCH_TARGETS: readonly string[] = [
+  'GOL',
+  'LAT',
+  'ZAG',
+  'MEI',
+  'ATA',
 ];
 
 /* ================================================================== *
@@ -183,9 +191,10 @@ export interface ExperimentSummary {
   robust: boolean;
   byRound: RoundEvaluation[];
   /**
-   * Métricas por posição derivadas das mesmas previsões do experimento
-   * (sem refit por posição). Chaves: 'GOL' | 'LAT' | 'ZAG' | 'MEI' |
-   * 'ATA' | 'TEC' | '__UNKNOWN__'.
+   * Métricas por posição derivadas das mesmas previsões do experimento.
+   * Em buscas por posição específica, contém apenas a chave daquela
+   * posição. Chaves possíveis: 'GOL' | 'LAT' | 'ZAG' | 'MEI' | 'ATA' |
+   * 'TEC' | '__UNKNOWN__'.
    */
   byPosition: Record<string, EvaluationMetrics>;
 }
@@ -251,6 +260,18 @@ export interface FeatureSearchResult {
   cacheHits: number;
   cacheMisses: number;
   positionRankings: PositionRankings[];
+  /** Preenchido quando a busca foi executada com filtro de posição. */
+  positionFilter: string | null;
+  /** Distribuição de linhas de teste por posição nesta busca. */
+  testRowsByPosition: Record<string, number>;
+  /** Distribuição de linhas de treino por posição nesta busca. */
+  trainRowsByPosition: Record<string, number>;
+}
+
+export interface PositionFeatureSearchResult {
+  position: string;
+  search: FeatureSearchResult | null;
+  error?: string;
 }
 
 /* ================================================================== *
@@ -270,6 +291,9 @@ interface PrecomputedFold {
   baselinePreds: number[];
   /** Posição de cada linha de teste (null → '__UNKNOWN__'). */
   testPositions: (string | null)[];
+  /** Contagem de linhas de treino/teste por posição neste fold. */
+  trainCountByPosition: Record<string, number>;
+  testCountByPosition: Record<string, number>;
 }
 
 function buildColumnLayout(
@@ -349,6 +373,15 @@ function buildRowVector(
   return out;
 }
 
+function countByPosition(rows: TrainingFeatureRow[]): Record<string, number> {
+  const acc: Record<string, number> = {};
+  for (const r of rows) {
+    const k = r.position ?? '__UNKNOWN__';
+    acc[k] = (acc[k] ?? 0) + 1;
+  }
+  return acc;
+}
+
 function precomputeFold(
   round: number,
   trainRows: TrainingFeatureRow[],
@@ -359,6 +392,8 @@ function precomputeFold(
   clubVocab: number[],
   oppVocab: number[],
   priorOf: (row: TrainingFeatureRow) => HistoricalPlayerRound[],
+  trainCountByPosition: Record<string, number>,
+  testCountByPosition: Record<string, number>,
 ): PrecomputedFold {
   const { names, featureColumns } = buildColumnLayout(clubVocab, oppVocab);
   const P = names.length;
@@ -419,6 +454,8 @@ function precomputeFold(
     actuals,
     baselinePreds,
     testPositions,
+    trainCountByPosition,
+    testCountByPosition,
   };
 }
 
@@ -543,12 +580,24 @@ function evaluateCombo(
  * Precompute global (dataset → folds)
  * ================================================================== */
 
+/**
+ * Constrói os folds temporais.
+ *
+ * `positionFilter`:
+ * - `null` (default) → comportamento global, idêntico ao anterior.
+ * - `"GOL"` (etc.)    → filtra treino E teste por essa posição antes de
+ *                       construir a matriz. Isso faz com que o Ridge
+ *                       seja treinado apenas com jogadores da posição,
+ *                       e o vocabulário de clube/oponente seja
+ *                       construído apenas com o treino daquela posição.
+ */
 export function precomputeFolds(
   dataset: TrainingDataset,
   histories: HistoricalPlayerHistory[],
   firstRound: number,
   lastRound: number,
   participationWindow: number,
+  positionFilter: string | null = null,
 ): PrecomputedFold[] {
   const historyByPlayer = new Map<number, HistoricalPlayerHistory>();
   for (const h of histories) historyByPlayer.set(h.playerId, h);
@@ -556,12 +605,20 @@ export function precomputeFolds(
   const folds: PrecomputedFold[] = [];
 
   for (let R = firstRound; R <= lastRound; R++) {
-    const trainRows = dataset.rows.filter(
+    let trainRows = dataset.rows.filter(
       (r) => r.round < R && r.target_participated,
     );
-    const testCandidates = dataset.rows.filter(
+    let testCandidates = dataset.rows.filter(
       (r) => r.round === R && r.target_participated,
     );
+
+    if (positionFilter !== null) {
+      trainRows = trainRows.filter((r) => r.position === positionFilter);
+      testCandidates = testCandidates.filter(
+        (r) => r.position === positionFilter,
+      );
+    }
+
     if (trainRows.length === 0 || testCandidates.length === 0) continue;
 
     const testRows: TrainingFeatureRow[] = [];
@@ -601,6 +658,8 @@ export function precomputeFolds(
         clubVocab,
         oppVocab,
         priorOf,
+        countByPosition(trainRows),
+        countByPosition(testRows),
       ),
     );
   }
@@ -700,11 +759,29 @@ function makePositionComparator(
 
 const POSITION_ORDER = ['GOL', 'LAT', 'ZAG', 'MEI', 'ATA', 'TEC'] as const;
 
+function aggregateByPosition(folds: PrecomputedFold[]): {
+  train: Record<string, number>;
+  test: Record<string, number>;
+} {
+  const train: Record<string, number> = {};
+  const test: Record<string, number> = {};
+  for (const f of folds) {
+    for (const [k, v] of Object.entries(f.trainCountByPosition)) {
+      train[k] = (train[k] ?? 0) + v;
+    }
+    for (const [k, v] of Object.entries(f.testCountByPosition)) {
+      test[k] = (test[k] ?? 0) + v;
+    }
+  }
+  return { train, test };
+}
+
 export function runFeatureSearch(
   dataset: TrainingDataset,
   histories: HistoricalPlayerHistory[],
   params: SearchParams,
   candidateIds: string[],
+  positionFilter: string | null = null,
 ): FeatureSearchResult {
   if (candidateIds.length === 0) {
     throw new Error('Nenhuma feature candidata selecionada.');
@@ -726,10 +803,18 @@ export function runFeatureSearch(
     params.firstRound,
     params.lastRound,
     params.participationWindow,
+    positionFilter,
   );
   if (folds.length === 0) {
-    throw new Error('Nenhum fold válido foi construído para o intervalo dado.');
+    throw new Error(
+      positionFilter === null
+        ? 'Nenhum fold válido foi construído para o intervalo dado.'
+        : `Nenhum fold válido para a posição "${positionFilter}" no intervalo dado.`,
+    );
   }
+
+  const { train: trainRowsByPosition, test: testRowsByPosition } =
+    aggregateByPosition(folds);
 
   const evaluate = (ids: string[]): ExperimentSummary => {
     const key = canonicalKey(ids);
@@ -825,7 +910,9 @@ export function runFeatureSearch(
       if (e.mae !== null && (bestMae === null || e.mae < bestMae)) bestMae = e.mae;
     }
     stages.push({
-      stage: 'Exhaustive',
+      stage: positionFilter === null
+        ? 'Exhaustive'
+        : `Exhaustive (${positionFilter})`,
       experimentsRun: allExperiments.size,
       bestMAE: bestMae,
     });
@@ -875,7 +962,10 @@ export function runFeatureSearch(
         if (e.mae !== null && (bestMae === null || e.mae < bestMae)) bestMae = e.mae;
       }
       stages.push({
-        stage: `Estágio k=${k} (${params.strategy})`,
+        stage:
+          positionFilter === null
+            ? `Estágio k=${k} (${params.strategy})`
+            : `Estágio k=${k} (${params.strategy}, ${positionFilter})`,
         experimentsRun: allExperiments.size,
         bestMAE: bestMae,
       });
@@ -983,16 +1073,17 @@ export function runFeatureSearch(
     });
   }
 
-  const signature = [
+  const signatureParts = [
     params.lambda,
     params.firstRound,
     params.lastRound,
     params.participationWindow,
     candidateIds.slice().sort().join(','),
-  ].join('::');
+  ];
+  if (positionFilter !== null) signatureParts.push(`pos=${positionFilter}`);
 
   return {
-    signature,
+    signature: signatureParts.join('::'),
     timestamp: new Date().toISOString(),
     params,
     candidateIds: [...candidateIds].sort(),
@@ -1016,7 +1107,68 @@ export function runFeatureSearch(
     cacheHits,
     cacheMisses,
     positionRankings,
+    positionFilter,
+    testRowsByPosition,
+    trainRowsByPosition,
   };
+}
+
+/* ================================================================== *
+ * Busca por posição
+ * ================================================================== */
+
+/**
+ * Executa o Feature Search uma vez por posição. Cada busca:
+ *
+ * - filtra treino E teste por aquela posição em cada fold;
+ * - re-treina o Ridge somente com jogadores da posição;
+ * - reconstrói o vocabulário de clube/oponente apenas com o treino da
+ *   posição (sem leakage);
+ * - compara contra um baseline (predictByRecentAverage) também restrito
+ *   àquela posição.
+ *
+ * A feature "position" é removida dos candidatos porque, dentro de uma
+ * única posição, ela não tem variância. Continua disponível para a
+ * busca global.
+ *
+ * `maxExperiments` se aplica por posição — cada posição roda até esse
+ * limite, separadamente.
+ *
+ * Erros são capturados por posição: se uma posição ficar sem folds
+ * válidos (raro mas possível em posições com pouco histórico), ela é
+ * marcada com `error` e as outras continuam.
+ */
+export function runFeatureSearchByPosition(
+  dataset: TrainingDataset,
+  histories: HistoricalPlayerHistory[],
+  params: SearchParams,
+  candidateIds: string[],
+  positions: readonly string[] = DEFAULT_POSITION_SEARCH_TARGETS,
+): PositionFeatureSearchResult[] {
+  const filteredCandidates = candidateIds.filter((id) => id !== 'position');
+
+  const results: PositionFeatureSearchResult[] = [];
+
+  for (const pos of positions) {
+    try {
+      const search = runFeatureSearch(
+        dataset,
+        histories,
+        params,
+        filteredCandidates,
+        pos,
+      );
+      results.push({ position: pos, search });
+    } catch (e) {
+      results.push({
+        position: pos,
+        search: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return results;
 }
 
 /* ================================================================== *
