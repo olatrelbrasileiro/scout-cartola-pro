@@ -1,16 +1,25 @@
 import type { Atleta, DashboardSnapshot } from "@/lib/cartola/types";
 import { POSICAO_NOME } from "@/lib/cartola/types";
 import { adversarioMap as advMapPart } from "@/lib/cartola/scoring";
+import { CARTOLA_SCOUT_LABELS } from "@/lib/cartola/scouts";
+
+const SCOUT_GLOSSARY = Object.entries(CARTOLA_SCOUT_LABELS)
+  .map(([key, label]) => `${key}=${label}`)
+  .join(", ");
 
 function statusLabel(id: number): string {
   return (
-    { 2: "Dúvida", 3: "Suspenso", 5: "Contundido", 6: "Nulo", 7: "Provável" }[id] ??
-    `status ${id}`
+    { 2: "Dúvida", 3: "Suspenso", 5: "Contundido", 6: "Nulo", 7: "Provável" }[id] ?? `status ${id}`
   );
 }
 
 /** Resumo enxuto de um atleta para caber no contexto da IA. */
-export function atletaToLine(a: Atleta, clubeNome: string, adversario?: string, mando?: "casa" | "fora"): string {
+export function atletaToLine(
+  a: Atleta,
+  clubeNome: string,
+  adversario?: string,
+  mando?: "casa" | "fora",
+): string {
   const scoutTop = a.scout
     ? Object.entries(a.scout)
         .sort((x, y) => y[1] - x[1])
@@ -22,7 +31,9 @@ export function atletaToLine(a: Atleta, clubeNome: string, adversario?: string, 
   return `#${a.atleta_id} ${a.apelido} (${POSICAO_NOME[a.posicao_id] ?? "?"}, ${clubeNome}) C$${a.preco_num.toFixed(2)} méd ${a.media_num.toFixed(1)} últ ${a.pontos_num.toFixed(1)} ${statusLabel(a.status_id)}${scoutTop ? ` [${scoutTop}]` : ""}${advStr}`;
 }
 
-export function adversarioMap(snapshot: DashboardSnapshot): Record<number, { adv: string; mando: "casa" | "fora" }> {
+export function adversarioMap(
+  snapshot: DashboardSnapshot,
+): Record<number, { adv: string; mando: "casa" | "fora" }> {
   const m = advMapPart(snapshot.partidas);
   const out: Record<number, { adv: string; mando: "casa" | "fora" }> = {};
   for (const [clubeId, info] of m.entries()) {
@@ -58,5 +69,5 @@ ${mercadoTxt}
 Top ${lines.length} atletas (apelido, posição, clube, preço, média, última pontuação, status, scouts, adversário):
 ${lines.join("\n")}
 
-Glossário de scout: G=gol, A=assistência, FT=finalização na trave, FD=finalização defendida, FF=finalização para fora, FS=falta sofrida, PE=passe errado, PI=impedimento, I=interceptação, RB=roubo de bola, SG=jogo sem sofrer gol, DE=defesa, GS=gol sofrido, FC=falta cometida, GC=gol contra, CA=cartão amarelo, CV=cartão vermelho, DP=defesa de pênalti.`;
+Glossário de scout: ${SCOUT_GLOSSARY}.`;
 }
