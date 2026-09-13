@@ -44,6 +44,10 @@ import {
   runTemporalEvaluationV2,
   type MLv2Result,
 } from "@/lib/ml/evaluation.v2.functions";
+import {
+  runTemporalEvaluationV21,
+  type V21Result,
+} from "@/lib/ml/evaluation.v21.functions";
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
@@ -1681,6 +1685,128 @@ export const runMLv2Comparison = createServerFn({ method: "POST" })
     );
 
     return { v1_2a, v2 };
+  });
+
+/* ------------------------------------------------------------------ *
+ * ML v2.1 — v1.2a + 10 scouts × 4 agregados
+ * ------------------------------------------------------------------ */
+
+export interface DEInspection {
+  presentInRaw: boolean;
+  rawRecordsWithDE: number;
+  rawRecordsTotal: number;
+  presentInNormalized: boolean;
+  normalizedRecordsWithDE: number;
+  normalizedRecordsTotal: number;
+}
+
+export interface MLv21ComparisonResult {
+  v1_2a: MLv1_2a_Result;
+  v2_1: V21Result;
+  deInspection: DEInspection;
+}
+
+export const runMLv2_1Comparison = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => MLv1Input.parse(input))
+  .handler(async ({ data }): Promise<MLv21ComparisonResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    // ---- Inspeção de DE no payload bruto ----
+    let rawRecordsWithDE = 0;
+    let rawRecordsTotal = 0;
+    for (const rr of rawRounds) {
+      for (const atleta of Object.values(rr.atletas)) {
+        rawRecordsTotal++;
+        const scout = atleta.scout;
+        if (scout && Object.prototype.hasOwnProperty.call(scout, "DE")) {
+          rawRecordsWithDE++;
+        }
+      }
+    }
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+
+    // ---- Inspeção de DE no histórico normalizado ----
+    let normalizedRecordsWithDE = 0;
+    let normalizedRecordsTotal = 0;
+    for (const h of histories) {
+      for (const r of h.rounds) {
+        normalizedRecordsTotal++;
+        if (r.scouts && Object.prototype.hasOwnProperty.call(r.scouts, "DE")) {
+          normalizedRecordsWithDE++;
+        }
+      }
+    }
+
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    const v1_2a = runTemporalEvaluationWithCategoricalV12a(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    const v2_1 = runTemporalEvaluationV21(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    return {
+      v1_2a,
+      v2_1,
+      deInspection: {
+        presentInRaw: rawRecordsWithDE > 0,
+        rawRecordsWithDE,
+        rawRecordsTotal,
+        presentInNormalized: normalizedRecordsWithDE > 0,
+        normalizedRecordsWithDE,
+        normalizedRecordsTotal,
+      },
+    };
   });
 
 /* ------------------------------------------------------------------ *
