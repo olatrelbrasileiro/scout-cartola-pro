@@ -40,6 +40,10 @@ import {
 } from "@/lib/ml/evaluation.functions";
 import type { MLv1Result } from "@/lib/ml/model.types";const BASE = "https://api.cartola.globo.com";
 type CacheEntry<T> = { value: T; expiresAt: number };
+import {
+  runTemporalEvaluationV2,
+  type MLv2Result,
+} from "@/lib/ml/evaluation.v2.functions";
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
@@ -1604,6 +1608,81 @@ export const runMLv1_2aComparison = createServerFn({ method: "POST" })
 
     return { v1_2, v1_2a };
   });
+/* ------------------------------------------------------------------ *
+ * ML v2 — v1.2a + features históricas de scouts
+ * ------------------------------------------------------------------ */
+
+export interface MLv2ComparisonResult {
+  v1_2a: MLv1_2a_Result;
+  v2: MLv2Result;
+}
+
+export const runMLv2Comparison = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => MLv1Input.parse(input))
+  .handler(async ({ data }): Promise<MLv2ComparisonResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    const v1_2a = runTemporalEvaluationWithCategoricalV12a(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    const v2 = runTemporalEvaluationV2(
+      dataset,
+      histories,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    return { v1_2a, v2 };
+  });
+
 /* ------------------------------------------------------------------ *
  * Dashboard enriquecido
  * ------------------------------------------------------------------ */
