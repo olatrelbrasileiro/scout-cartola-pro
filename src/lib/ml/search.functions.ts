@@ -1,13 +1,12 @@
 // src/lib/ml/search.functions.ts
 
 import type {
-  CartolaScouts,
   HistoricalPlayerHistory,
   HistoricalPlayerRound,
 } from '@/lib/data/historical.types';
 import { predictByRecentAverage } from '@/lib/backtest/baseline';
 import type { TrainingDataset, TrainingFeatureRow } from './features.types';
-import type { RoundEvaluation } from './model.types';
+import type { EvaluationMetrics, RoundEvaluation } from './model.types';
 import {
   computeMeansAndStds,
   imputeAndStandardize,
@@ -61,8 +60,6 @@ const NUMERIC_IDS: readonly string[] = [
   'away_points_avg',
   'rounds_since_last_game',
 ];
-
-const GROUP_IDS: readonly string[] = ['clubId', 'opponentClubId', 'position'];
 
 const NUMERIC_LABELS: Record<string, string> = {
   isHome: 'Mandante',
@@ -185,6 +182,12 @@ export interface ExperimentSummary {
   maxSingleRoundMAEWorseningPct: number;
   robust: boolean;
   byRound: RoundEvaluation[];
+  /**
+   * Métricas por posição derivadas das mesmas previsões do experimento
+   * (sem refit por posição). Chaves: 'GOL' | 'LAT' | 'ZAG' | 'MEI' |
+   * 'ATA' | 'TEC' | '__UNKNOWN__'.
+   */
+  byPosition: Record<string, EvaluationMetrics>;
 }
 
 export interface FeatureFrequencyEntry {
@@ -193,6 +196,28 @@ export interface FeatureFrequencyEntry {
   countBottom: number;
   pctTop: number;
   pctBottom: number;
+}
+
+export interface PositionRankingEntry {
+  rank: number;
+  featureIds: string[];
+  featureCount: number;
+  predictions: number;
+  mae: number | null;
+  rmse: number | null;
+  pearson: number | null;
+  robust: boolean;
+}
+
+export interface PositionRankings {
+  position: string;
+  /** Nº de previsões naquela posição (constante entre experimentos). */
+  predictions: number;
+  bestMae: number | null;
+  bestRmse: number | null;
+  bestPearson: number | null;
+  top: PositionRankingEntry[];
+  frequency: FeatureFrequencyEntry[];
 }
 
 export interface SearchStageProgress {
@@ -214,12 +239,18 @@ export interface FeatureSearchResult {
   bottom: ExperimentSummary[];
   frequency: FeatureFrequencyEntry[];
   benchmarks: {
-    baseline: { predictions: number; mae: number | null; rmse: number | null; pearson: number | null };
+    baseline: {
+      predictions: number;
+      mae: number | null;
+      rmse: number | null;
+      pearson: number | null;
+    };
     v12a: ExperimentSummary;
   };
   stages: SearchStageProgress[];
   cacheHits: number;
   cacheMisses: number;
+  positionRankings: PositionRankings[];
 }
 
 /* ================================================================== *
@@ -237,6 +268,8 @@ interface PrecomputedFold {
   yTrain: number[];
   actuals: number[];
   baselinePreds: number[];
+  /** Posição de cada linha de teste (null → '__UNKNOWN__'). */
+  testPositions: (string | null)[];
 }
 
 function buildColumnLayout(
@@ -372,6 +405,8 @@ function precomputeFold(
     fullXty[a] = s;
   }
 
+  const testPositions = testRows.map((r) => r.position ?? null);
+
   return {
     round,
     columnNames: names,
@@ -383,6 +418,7 @@ function precomputeFold(
     yTrain,
     actuals,
     baselinePreds,
+    testPositions,
   };
 }
 
@@ -399,6 +435,7 @@ function evaluateCombo(
   const allActuals: number[] = [];
   const allBaseline: number[] = [];
   const byRound: RoundEvaluation[] = [];
+  const posAcc = new Map<string, { preds: number[]; actuals: number[] }>();
   let columnCount = 0;
 
   for (const fold of folds) {
@@ -429,6 +466,18 @@ function evaluateCombo(
     allActuals.push(...fold.actuals);
     allBaseline.push(...fold.baselinePreds);
 
+    // Agregação por posição: sem novo Ridge, apenas separa o que já existe
+    for (let i = 0; i < fold.testPositions.length; i++) {
+      const key = fold.testPositions[i] ?? '__UNKNOWN__';
+      let acc = posAcc.get(key);
+      if (!acc) {
+        acc = { preds: [], actuals: [] };
+        posAcc.set(key, acc);
+      }
+      acc.preds.push(preds[i]);
+      acc.actuals.push(fold.actuals[i]);
+    }
+
     byRound.push({
       round: fold.round,
       ml: computeMetrics(preds, fold.actuals),
@@ -457,6 +506,11 @@ function evaluateCombo(
     }
   }
 
+  const byPosition: Record<string, EvaluationMetrics> = {};
+  for (const [pos, acc] of posAcc) {
+    byPosition[pos] = computeMetrics(acc.preds, acc.actuals);
+  }
+
   return {
     featureIds: [...featureIds].sort(),
     featureCount: featureIds.length,
@@ -481,6 +535,7 @@ function evaluateCombo(
     maxSingleRoundMAEWorseningPct: maxWorseningPct,
     robust: false,
     byRound,
+    byPosition,
   };
 }
 
@@ -590,13 +645,12 @@ function estimateBeam(
   maxF: number,
   beamWidth: number,
 ): number {
-  // Upper bound: por estágio, beamWidth × n candidatos
   const stages = Math.max(0, maxF - Math.max(1, minF) + 1);
   return Math.min(1e9, stages * beamWidth * n);
 }
 
 /* ================================================================== *
- * Comparador de ranking
+ * Comparadores
  * ================================================================== */
 
 function makeComparator(
@@ -620,9 +674,31 @@ function makeComparator(
   };
 }
 
+function makePositionComparator(
+  position: string,
+  metric: SearchMetric,
+): (a: ExperimentSummary, b: ExperimentSummary) => number {
+  const read = (x: ExperimentSummary): number => {
+    const e = x.byPosition[position];
+    if (!e) return metric === 'pearson' ? -Infinity : Infinity;
+    const v = e[metric];
+    if (v === null) return metric === 'pearson' ? -Infinity : Infinity;
+    return v;
+  };
+  const asc = metric === 'mae' || metric === 'rmse';
+  return (a, b) => {
+    const va = read(a);
+    const vb = read(b);
+    if (va !== vb) return asc ? va - vb : vb - va;
+    return a.featureIds.join('|').localeCompare(b.featureIds.join('|'));
+  };
+}
+
 /* ================================================================== *
  * Busca
  * ================================================================== */
+
+const POSITION_ORDER = ['GOL', 'LAT', 'ZAG', 'MEI', 'ATA', 'TEC'] as const;
 
 export function runFeatureSearch(
   dataset: TrainingDataset,
@@ -644,7 +720,6 @@ export function runFeatureSearch(
 
   const canonicalKey = (ids: string[]): string => [...ids].sort().join('|');
 
-  // Precompute
   const folds = precomputeFolds(
     dataset,
     histories,
@@ -669,10 +744,8 @@ export function runFeatureSearch(
     return res;
   };
 
-  // Benchmarks
   const v12a = evaluate(V12A_FEATURE_IDS);
 
-  // Baseline agregado
   let baselinePredsAll: number[] = [];
   let baselineActualsAll: number[] = [];
   for (const f of folds) {
@@ -681,7 +754,6 @@ export function runFeatureSearch(
   }
   const baselineMetrics = computeMetrics(baselinePredsAll, baselineActualsAll);
 
-  // Filtros de robustez — usados apenas para a coluna "robust"
   const markRobust = (e: ExperimentSummary): ExperimentSummary => ({
     ...e,
     dMaeVsV12a:
@@ -694,13 +766,11 @@ export function runFeatureSearch(
         : null,
     robust:
       e.roundsBetterThanBaseline >= params.minRoundsBetterThanBaseline &&
-      e.maxSingleRoundMAEWorseningPct <=
-        params.maxSingleRoundMAEWorsening,
+      e.maxSingleRoundMAEWorseningPct <= params.maxSingleRoundMAEWorsening,
   });
 
   const comparator = makeComparator(params.metric, false);
 
-  // ---------- Exhaustive ----------
   const estimate =
     params.strategy === 'exhaustive'
       ? estimateExhaustive(
@@ -715,10 +785,7 @@ export function runFeatureSearch(
           params.strategy === 'forward' ? 1 : params.beamWidth,
         );
 
-  if (
-    params.strategy === 'exhaustive' &&
-    estimate > params.maxExperiments
-  ) {
+  if (params.strategy === 'exhaustive' && estimate > params.maxExperiments) {
     throw new Error(
       `Estimativa exhaustive = ${estimate} > maxExperiments (${params.maxExperiments}). ` +
         `Use estratégia beam ou reduza maxFeatures.`,
@@ -729,7 +796,6 @@ export function runFeatureSearch(
   let truncatedToLimit = false;
 
   if (params.strategy === 'exhaustive') {
-    // Gera todos os subsets de tamanho [minF..maxF]
     const n = candidateIds.length;
     const minF = Math.max(1, params.minFeatures);
     const maxF = Math.min(n, params.maxFeatures);
@@ -764,14 +830,13 @@ export function runFeatureSearch(
       bestMAE: bestMae,
     });
   } else {
-    // Beam / Forward
     const beamWidth =
       params.strategy === 'forward' ? 1 : Math.max(1, params.beamWidth);
     const n = candidateIds.length;
     const minF = Math.max(1, params.minFeatures);
     const maxF = Math.min(n, params.maxFeatures);
 
-    let beam: string[][] = []; // combinações selecionadas no estágio anterior
+    let beam: string[][] = [];
 
     for (let k = minF; k <= maxF; k++) {
       const candidates: string[][] = [];
@@ -800,7 +865,6 @@ export function runFeatureSearch(
         }
       }
 
-      // Ranking do estágio
       const rankedThisStage = [...scored].sort(comparator);
       beam = rankedThisStage
         .slice(0, beamWidth)
@@ -820,14 +884,12 @@ export function runFeatureSearch(
     }
   }
 
-  // Ranking global
   const allArr = Array.from(allExperiments.values());
   const sorted = [...allArr].sort(comparator);
   const top = sorted.slice(0, 10);
   const bottom = sorted.slice(-10).reverse();
   const best = sorted.length > 0 ? sorted[0] : null;
 
-  // Frequência
   const frequency: FeatureFrequencyEntry[] = candidateIds
     .map((id) => {
       const countTop = top.reduce(
@@ -846,9 +908,81 @@ export function runFeatureSearch(
         pctBottom: bottom.length > 0 ? countBottom / bottom.length : 0,
       };
     })
-    .sort((a, b) => b.countTop - a.countTop || a.featureId.localeCompare(b.featureId));
+    .sort(
+      (a, b) =>
+        b.countTop - a.countTop || a.featureId.localeCompare(b.featureId),
+    );
 
-  // Assinatura do contexto
+  // ---------- Rankings por posição (derivados, sem refit) ----------
+  const positionRankings: PositionRankings[] = [];
+  const positionsToRank: string[] = [...POSITION_ORDER, '__UNKNOWN__'];
+
+  for (const pos of positionsToRank) {
+    const eligible = allArr.filter((e) => (e.byPosition[pos]?.count ?? 0) > 0);
+    if (eligible.length === 0) continue;
+
+    const posSorted = [...eligible].sort(
+      makePositionComparator(pos, params.metric),
+    );
+    const posTop = posSorted.slice(0, 10).map((e, i): PositionRankingEntry => {
+      const m = e.byPosition[pos];
+      return {
+        rank: i + 1,
+        featureIds: [...e.featureIds],
+        featureCount: e.featureCount,
+        predictions: m.count,
+        mae: m.mae,
+        rmse: m.rmse,
+        pearson: m.pearson,
+        robust: e.robust,
+      };
+    });
+
+    let bestMae: number | null = null;
+    let bestRmse: number | null = null;
+    let bestPearson: number | null = null;
+    for (const e of eligible) {
+      const m = e.byPosition[pos];
+      if (m.mae !== null && (bestMae === null || m.mae < bestMae)) bestMae = m.mae;
+      if (m.rmse !== null && (bestRmse === null || m.rmse < bestRmse))
+        bestRmse = m.rmse;
+      if (m.pearson !== null && (bestPearson === null || m.pearson > bestPearson))
+        bestPearson = m.pearson;
+    }
+
+    const freqMap = new Map<string, number>();
+    for (const e of posTop) {
+      for (const f of e.featureIds) {
+        freqMap.set(f, (freqMap.get(f) ?? 0) + 1);
+      }
+    }
+    const posFrequency: FeatureFrequencyEntry[] = candidateIds
+      .map((id) => {
+        const c = freqMap.get(id) ?? 0;
+        return {
+          featureId: id,
+          countTop: c,
+          countBottom: 0,
+          pctTop: posTop.length > 0 ? c / posTop.length : 0,
+          pctBottom: 0,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.countTop - a.countTop || a.featureId.localeCompare(b.featureId),
+      );
+
+    positionRankings.push({
+      position: pos,
+      predictions: eligible[0].byPosition[pos].count,
+      bestMae,
+      bestRmse,
+      bestPearson,
+      top: posTop,
+      frequency: posFrequency,
+    });
+  }
+
   const signature = [
     params.lambda,
     params.firstRound,
@@ -881,21 +1015,22 @@ export function runFeatureSearch(
     stages,
     cacheHits,
     cacheMisses,
+    positionRankings,
   };
 }
 
 /* ================================================================== *
- * Métricas derivadas do Lab (para a UI não recalcular)
+ * Métricas derivadas
  * ================================================================== */
 
-export function summarizeV12a(
-  v12a: ExperimentSummary,
-): { mae: number | null; rmse: number | null; pearson: number | null } {
+export function summarizeV12a(v12a: ExperimentSummary): {
+  mae: number | null;
+  rmse: number | null;
+  pearson: number | null;
+} {
   return { mae: v12a.mae, rmse: v12a.rmse, pearson: v12a.pearson };
 }
 
-/** Exporta apenas para a UI conhecer a ordem canônica dos scouts. */
 export { V21_SCOUTS, V21_AGGREGATES, V21_SCOUT_FEATURE_NAMES };
 
-/** (Re-export para a UI não precisar importar de evaluation.v21) */
-export type { CartolaScouts };
+export type { CartolaScouts } from '@/lib/data/historical.types';
