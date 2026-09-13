@@ -2,8 +2,17 @@
 
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { runMLLabEvaluation } from "@/lib/cartola/api.functions";
+import {
+  runMLLabEvaluation,
+  runMLLabFeatureSearch,
+} from "@/lib/cartola/api.functions";
 import type { LabRunResult } from "@/lib/ml/lab.functions";
+import {
+  FEATURE_CATALOG,
+  type FeatureSearchResult,
+  type SearchMetric,
+  type SearchStrategy,
+} from "@/lib/ml/search.functions";
 
 /* ---------------- Constantes de features ---------------- */
 
@@ -114,7 +123,7 @@ export const Route = createFileRoute("/ml-lab")({
   component: MLLabPage,
 });
 
-/* ---------------- Componentes ---------------- */
+/* ---------------- Componentes auxiliares ---------------- */
 
 function Card({
   label,
@@ -140,6 +149,8 @@ function Card({
     </div>
   );
 }
+
+/* ---------------- Página principal ---------------- */
 
 function MLLabPage() {
   // ---------- Parâmetros ----------
@@ -188,7 +199,7 @@ function MLLabPage() {
   const previewFeatureCount =
     selectedNumeric.length +
     (includePosition ? 5 : 0) +
-    (includeClub ? 21 : 0) + // aproximação (vocab varia)
+    (includeClub ? 21 : 0) +
     (includeOpponent ? 21 : 0) +
     selectedScouts.length;
 
@@ -213,7 +224,6 @@ function MLLabPage() {
         },
       });
       setResult(res);
-      // grava no histórico
       const record: ExperimentRecord = {
         id: `${Date.now()}`,
         timestamp: new Date().toLocaleTimeString("pt-BR"),
@@ -325,7 +335,8 @@ function MLLabPage() {
       m[f] = rec.config.numericFeatures.includes(f);
     setNumericState(m);
     const sm: Record<string, boolean> = {};
-    for (const f of ALL_SCOUT_FEATURES) sm[f] = rec.config.scoutFeatures.includes(f);
+    for (const f of ALL_SCOUT_FEATURES)
+      sm[f] = rec.config.scoutFeatures.includes(f);
     setScoutState(sm);
     setIncludePosition(rec.config.includePosition);
     setIncludeClub(rec.config.includeClub);
@@ -397,9 +408,7 @@ function MLLabPage() {
             <input
               type="number"
               value={participationWindow}
-              onChange={(e) =>
-                setParticipationWindow(Number(e.target.value))
-              }
+              onChange={(e) => setParticipationWindow(Number(e.target.value))}
               className="rounded border px-2 py-1"
             />
           </label>
@@ -522,7 +531,10 @@ function MLLabPage() {
             >
               tudo
             </button>
-            <button onClick={noScouts} className="rounded border bg-muted px-2 py-1">
+            <button
+              onClick={noScouts}
+              className="rounded border bg-muted px-2 py-1"
+            >
               nada
             </button>
             {SCOUT_AGGREGATES.map((a) => (
@@ -558,10 +570,7 @@ function MLLabPage() {
                   {SCOUT_AGGREGATES.map((a) => {
                     const f = `scout_${s}_${a}`;
                     return (
-                      <td
-                        key={a}
-                        className="border-b px-2 py-1 text-center"
-                      >
+                      <td key={a} className="border-b px-2 py-1 text-center">
                         <input
                           type="checkbox"
                           checked={scoutState[f] ?? false}
@@ -605,9 +614,7 @@ function MLLabPage() {
         >
           {running ? "Executando…" : "Executar"}
         </button>
-        {error && (
-          <span className="text-sm text-red-700">Erro: {error}</span>
-        )}
+        {error && <span className="text-sm text-red-700">Erro: {error}</span>}
       </section>
 
       {/* Resultado */}
@@ -721,7 +728,9 @@ function MLLabPage() {
               />
               <Card
                 label="treino/teste mesmo shape"
-                value={result.user.audit.trainTestFeatureCountMatch ? "OK" : "FAIL"}
+                value={
+                  result.user.audit.trainTestFeatureCountMatch ? "OK" : "FAIL"
+                }
                 tone={
                   result.user.audit.trainTestFeatureCountMatch ? "good" : "bad"
                 }
@@ -859,14 +868,10 @@ function MLLabPage() {
                       {fmt(h.pearson, 4)}
                     </td>
                     <td className="border-b px-2 py-1 text-right">
-                      {h.dMaeVsV12a === null
-                        ? "—"
-                        : h.dMaeVsV12a.toFixed(4)}
+                      {h.dMaeVsV12a === null ? "—" : h.dMaeVsV12a.toFixed(4)}
                     </td>
                     <td className="border-b px-2 py-1 text-right">
-                      {h.dRmseVsV12a === null
-                        ? "—"
-                        : h.dRmseVsV12a.toFixed(4)}
+                      {h.dRmseVsV12a === null ? "—" : h.dRmseVsV12a.toFixed(4)}
                     </td>
                     <td className="border-b px-2 py-1 text-right">
                       {h.dPearsonVsV12a === null
@@ -889,11 +894,470 @@ function MLLabPage() {
         </section>
       )}
 
+      {/* ============== FEATURE SEARCH ============== */}
+      <FeatureSearchSection />
+
       <footer className="border-t pt-4 text-xs text-muted-foreground">
         Laboratório experimental. Nenhuma versão anterior (v1, v1.1, v1.2,
         v1.2a, v2, v2.1, baseline, audit) foi alterada. O histórico é
         armazenado somente na sessão do navegador.
       </footer>
     </div>
+  );
+}
+
+/* ---------------- Feature Search ---------------- */
+
+function FeatureSearchSection() {
+  const [strategy, setStrategy] = useState<SearchStrategy>("beam");
+  const [metric, setMetric] = useState<SearchMetric>("mae");
+  const [beamWidth, setBeamWidth] = useState(10);
+  const [maxFeatures, setMaxFeatures] = useState(20);
+  const [minFeatures, setMinFeatures] = useState(1);
+  const [maxExperiments, setMaxExperiments] = useState(5000);
+  const [minRoundsBetter, setMinRoundsBetter] = useState(0);
+  const [maxWorsening, setMaxWorsening] = useState(1.0);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<FeatureSearchResult | null>(null);
+  const [candidateState, setCandidateState] = useState<Record<string, boolean>>(
+    () => {
+      const m: Record<string, boolean> = {};
+      for (const e of FEATURE_CATALOG) m[e.id] = true;
+      return m;
+    },
+  );
+
+  const candidateIds = FEATURE_CATALOG.filter((e) => candidateState[e.id]).map(
+    (e) => e.id,
+  );
+
+  async function handleRun() {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await runMLLabFeatureSearch({
+        data: {
+          strategy,
+          metric,
+          beamWidth,
+          maxFeatures,
+          minFeatures,
+          maxExperiments,
+          minRoundsBetterThanBaseline: minRoundsBetter,
+          maxSingleRoundMAEWorsening: maxWorsening,
+          lambda: 1.0,
+          firstRound: 5,
+          lastRound: 26,
+          participationWindow: 12,
+          candidateIds,
+        },
+      });
+      setResult(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function toggleGroup(group: string, value: boolean) {
+    setCandidateState((s) => {
+      const next = { ...s };
+      for (const e of FEATURE_CATALOG) {
+        if (e.group === group) next[e.id] = value;
+      }
+      return next;
+    });
+  }
+
+  function exportJson() {
+    if (!result) return;
+    const blob = new Blob([JSON.stringify(result, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `feature-search-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const groups = Array.from(new Set(FEATURE_CATALOG.map((e) => e.group)));
+
+  return (
+    <section className="space-y-4 rounded border-2 border-blue-200 p-4">
+      <header>
+        <h2 className="text-xl font-bold">Feature Search</h2>
+        <p className="text-sm text-muted-foreground">
+          Busca automática de combinações. Resultados desta busca são
+          exploratórios e podem sofrer overfitting ao período histórico
+          utilizado.
+        </p>
+      </header>
+
+      {/* Parâmetros */}
+      <div className="grid gap-3 sm:grid-cols-4">
+        <label className="flex flex-col text-sm">
+          <span>Estratégia</span>
+          <select
+            value={strategy}
+            onChange={(e) => setStrategy(e.target.value as SearchStrategy)}
+            className="rounded border px-2 py-1"
+          >
+            <option value="exhaustive">Exhaustive</option>
+            <option value="forward">Forward Selection</option>
+            <option value="beam">Beam Search</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Métrica</span>
+          <select
+            value={metric}
+            onChange={(e) => setMetric(e.target.value as SearchMetric)}
+            className="rounded border px-2 py-1"
+          >
+            <option value="mae">MAE</option>
+            <option value="rmse">RMSE</option>
+            <option value="pearson">Pearson</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Beam width</span>
+          <input
+            type="number"
+            value={beamWidth}
+            onChange={(e) => setBeamWidth(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Max features</span>
+          <input
+            type="number"
+            value={maxFeatures}
+            onChange={(e) => setMaxFeatures(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Min features</span>
+          <input
+            type="number"
+            value={minFeatures}
+            onChange={(e) => setMinFeatures(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Max experiments</span>
+          <input
+            type="number"
+            value={maxExperiments}
+            onChange={(e) => setMaxExperiments(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Min rodadas melhores que BL</span>
+          <input
+            type="number"
+            value={minRoundsBetter}
+            onChange={(e) => setMinRoundsBetter(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Pior deterioração (fração)</span>
+          <input
+            type="number"
+            step="0.05"
+            value={maxWorsening}
+            onChange={(e) => setMaxWorsening(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+      </div>
+
+      {/* Candidatos */}
+      <details className="rounded border">
+        <summary className="cursor-pointer bg-muted px-3 py-2 text-sm">
+          Candidatos ({candidateIds.length} / {FEATURE_CATALOG.length})
+        </summary>
+        <div className="space-y-2 p-3">
+          <div className="flex flex-wrap gap-2">
+            {groups.map((g) => (
+              <div key={g} className="flex items-center gap-2 text-xs">
+                <span className="font-mono">{g}</span>
+                <button
+                  onClick={() => toggleGroup(g, true)}
+                  className="rounded border bg-muted px-1.5 py-0.5"
+                >
+                  +
+                </button>
+                <button
+                  onClick={() => toggleGroup(g, false)}
+                  className="rounded border bg-muted px-1.5 py-0.5"
+                >
+                  −
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+            {FEATURE_CATALOG.map((e) => (
+              <label key={e.id} className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={candidateState[e.id] ?? false}
+                  onChange={(ev) =>
+                    setCandidateState((s) => ({
+                      ...s,
+                      [e.id]: ev.target.checked,
+                    }))
+                  }
+                />
+                <span className="font-mono">{e.id}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </details>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={handleRun}
+          disabled={running || candidateIds.length === 0}
+          className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+        >
+          {running ? "Executando…" : "Executar Feature Search"}
+        </button>
+        {result && (
+          <button
+            onClick={exportJson}
+            className="rounded border bg-muted px-3 py-1.5 text-sm"
+          >
+            Exportar JSON
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Card label="Experimentos" value={result.experimentCount} />
+            <Card
+              label="Cache (hit/miss)"
+              value={`${result.cacheHits} / ${result.cacheMisses}`}
+            />
+            <Card
+              label="Truncado por limite"
+              value={result.truncatedToLimit ? "SIM" : "não"}
+              tone={result.truncatedToLimit ? "warn" : "default"}
+            />
+            <Card
+              label="Melhor MAE (top1)"
+              value={result.best?.mae?.toFixed(4) ?? "—"}
+            />
+          </div>
+
+          {/* Benchmarks */}
+          <div>
+            <h3 className="mb-2 font-semibold">Benchmarks</h3>
+            <div className="overflow-x-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="border-b px-2 py-2 text-left">Fonte</th>
+                    <th className="border-b px-2 py-2 text-right">Pred</th>
+                    <th className="border-b px-2 py-2 text-right">MAE</th>
+                    <th className="border-b px-2 py-2 text-right">RMSE</th>
+                    <th className="border-b px-2 py-2 text-right">Pearson</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="border-b px-2 py-1">Baseline</td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.baseline.predictions}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.baseline.mae?.toFixed(4) ?? "—"}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.baseline.rmse?.toFixed(4) ?? "—"}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.baseline.pearson?.toFixed(4) ?? "—"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="border-b px-2 py-1">v1.2a</td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.v12a.predictions}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.v12a.mae?.toFixed(4) ?? "—"}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.v12a.rmse?.toFixed(4) ?? "—"}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {result.benchmarks.v12a.pearson?.toFixed(4) ?? "—"}
+                    </td>
+                  </tr>
+                  {result.best && (
+                    <tr className="bg-green-50">
+                      <td className="border-b px-2 py-1 font-semibold">
+                        Melhor combinação encontrada
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {result.best.predictions}
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {result.best.mae?.toFixed(4) ?? "—"}
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {result.best.rmse?.toFixed(4) ?? "—"}
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {result.best.pearson?.toFixed(4) ?? "—"}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* TOP 10 */}
+          <div>
+            <h3 className="mb-2 font-semibold">TOP 10</h3>
+            <div className="space-y-1">
+              {result.top.map((e, i) => (
+                <div
+                  key={e.featureIds.join("|")}
+                  className="rounded border p-2 text-xs"
+                >
+                  <div className="font-semibold">
+                    #{i + 1} — MAE {e.mae?.toFixed(4)} · RMSE{" "}
+                    {e.rmse?.toFixed(4)} · Pearson {e.pearson?.toFixed(4)} ·{" "}
+                    {e.featureCount} feats{" "}
+                    {e.robust ? "🟢 ROBUSTA" : "🟠 INSTÁVEL"}
+                  </div>
+                  <div className="font-mono text-[10px] text-muted-foreground">
+                    {e.featureIds.join(" | ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* BOTTOM 10 */}
+          <div>
+            <h3 className="mb-2 font-semibold">BOTTOM 10</h3>
+            <div className="space-y-1">
+              {result.bottom.map((e, i) => (
+                <div
+                  key={e.featureIds.join("|")}
+                  className="rounded border p-2 text-xs"
+                >
+                  <div className="font-semibold">
+                    #{i + 1} — MAE {e.mae?.toFixed(4)} · RMSE{" "}
+                    {e.rmse?.toFixed(4)} · Pearson {e.pearson?.toFixed(4)} ·{" "}
+                    {e.featureCount} feats
+                  </div>
+                  <div className="font-mono text-[10px] text-muted-foreground">
+                    {e.featureIds.join(" | ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Frequência */}
+          <div>
+            <h3 className="mb-2 font-semibold">
+              Frequência nos TOP 10 / BOTTOM 10
+            </h3>
+            <div className="overflow-x-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="border-b px-2 py-2 text-left">feature</th>
+                    <th className="border-b px-2 py-2 text-right">Top 10</th>
+                    <th className="border-b px-2 py-2 text-right">% Top</th>
+                    <th className="border-b px-2 py-2 text-right">Bottom 10</th>
+                    <th className="border-b px-2 py-2 text-right">% Bottom</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.frequency.slice(0, 30).map((f) => (
+                    <tr key={f.featureId}>
+                      <td className="border-b px-2 py-1 font-mono">
+                        {f.featureId}
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {f.countTop}/10
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {(f.pctTop * 100).toFixed(0)}%
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {f.countBottom}/10
+                      </td>
+                      <td className="border-b px-2 py-1 text-right">
+                        {(f.pctBottom * 100).toFixed(0)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Estágios */}
+          <details className="rounded border">
+            <summary className="cursor-pointer bg-muted px-3 py-2 text-xs">
+              Progresso por estágio ({result.stages.length})
+            </summary>
+            <table className="min-w-full text-xs">
+              <thead className="bg-muted">
+                <tr>
+                  <th className="border-b px-2 py-2 text-left">estágio</th>
+                  <th className="border-b px-2 py-2 text-right">experimentos</th>
+                  <th className="border-b px-2 py-2 text-right">melhor MAE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.stages.map((s, i) => (
+                  <tr key={i}>
+                    <td className="border-b px-2 py-1">{s.stage}</td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {s.experimentsRun}
+                    </td>
+                    <td className="border-b px-2 py-1 text-right">
+                      {s.bestMAE?.toFixed(4) ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+
+          <p className="text-[10px] text-muted-foreground">
+            Assinatura do contexto: <code>{result.signature}</code>
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
