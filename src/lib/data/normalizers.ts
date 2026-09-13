@@ -37,7 +37,7 @@ export function mapPosition(
  */
 const KNOWN_SCOUT_KEYS: readonly (keyof CartolaScouts)[] = [
   'G', 'A', 'FT', 'FD', 'FF', 'FS', 'PP', 'PS',
-  'DS', 'DP', 'SG', 'GS', 'FC', 'GC', 'CA', 'CV', 'PC',
+  'DS', 'DP', 'SG', 'GS', 'FC', 'DE', 'GC', 'CA', 'CV', 'PC',
   'I',
 ];
 
