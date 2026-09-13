@@ -1,33 +1,26 @@
-// src/lib/data/historical.types.ts
-
 /**
  * Posições possíveis no Cartola FC.
  */
 export type CartolaPosition = 'GOL' | 'LAT' | 'ZAG' | 'MEI' | 'ATA' | 'TEC';
 
 /**
- * Scouts efetivamente retornados pelo histórico do Cartola
- * (alinhados com os usados em scoring.ts).
+ * Scouts retornados pelo histórico do Cartola.
  *
- * Observações:
- * - `FD` = defesa do goleiro.
- * - `DS` = desarme.
- * - `I`  = interceptações.
- * - `DE` (defesa difícil) e `DD` foram removidos do Cartola em 2021
- *   e por isso NÃO estão aqui.
- * - Todos opcionais: a API só envia as chaves que ocorreram na rodada.
+ * Todos são opcionais porque a API normalmente só envia
+ * as chaves dos scouts que ocorreram na partida.
  */
 export interface CartolaScouts {
   G?: number;   // gols
   A?: number;   // assistências
   FT?: number;  // finalizações na trave
-  FD?: number;  // defesa do goleiro
+  FD?: number;  // defesas do goleiro
   FF?: number;  // finalizações para fora
   FS?: number;  // faltas sofridas
   PP?: number;  // pênaltis perdidos
   PS?: number;  // pênaltis sofridos
   DS?: number;  // desarmes
   DP?: number;  // defesas de pênalti
+  DE?: number;  // defesas difíceis
   SG?: number;  // saldo de gols (jogo sem sofrer gol)
   GS?: number;  // gols sofridos
   FC?: number;  // faltas cometidas
@@ -42,8 +35,8 @@ export interface CartolaScouts {
  * Atuação histórica de um jogador em uma rodada específica.
  *
  * Regra importante:
- * - participated = false  -> não entrou em campo (points deve ser 0)
- * - participated = true   -> entrou em campo, mesmo que points = 0
+ * - participated = false -> não entrou em campo (points deve ser 0)
+ * - participated = true  -> entrou em campo, mesmo que points = 0
  */
 export interface HistoricalPlayerRound {
   playerId: number;
