@@ -38,8 +38,7 @@ import {
   type MLv1_2_Result,
   type MLv1_2a_Result,
 } from "@/lib/ml/evaluation.functions";
-import type { MLv1Result } from "@/lib/ml/model.types";const BASE = "https://api.cartola.globo.com";
-type CacheEntry<T> = { value: T; expiresAt: number };
+import type { MLv1Result } from "@/lib/ml/model.types";
 import {
   runTemporalEvaluationV2,
   type MLv2Result,
@@ -57,11 +56,15 @@ import {
 } from "@/lib/ml/lab.functions";
 import {
   runFeatureSearch,
+  runFeatureSearchByPosition,
   FEATURE_CATALOG_IDS,
   type FeatureSearchResult,
   type SearchParams,
+  type PositionFeatureSearchResult,
 } from "@/lib/ml/search.functions";
 
+const BASE = "https://api.cartola.globo.com";
+type CacheEntry<T> = { value: T; expiresAt: number };
 const cache = new Map<string, CacheEntry<unknown>>();
 
 async function cached<T>(
@@ -1464,6 +1467,7 @@ export const runMLv1_1Comparison = createServerFn({ method: "POST" })
 
     return { v1, v1_1, excludedFeature: EXCLUDED_FEATURE };
   });
+
 /* ------------------------------------------------------------------ *
  * ML v1.2 — one-hot temporal de clubId / opponentClubId
  * ------------------------------------------------------------------ */
@@ -1551,6 +1555,7 @@ export const runMLv1_2Comparison = createServerFn({ method: "POST" })
 
     return { v1, v1_1, v1_2 };
   });
+
 /* ------------------------------------------------------------------ *
  * ML v1.2a — UNKNOWN explícito em clubId / opponentClubId
  * ------------------------------------------------------------------ */
@@ -1625,6 +1630,7 @@ export const runMLv1_2aComparison = createServerFn({ method: "POST" })
 
     return { v1_2, v1_2a };
   });
+
 /* ------------------------------------------------------------------ *
  * ML v2 — v1.2a + features históricas de scouts
  * ------------------------------------------------------------------ */
@@ -1821,6 +1827,7 @@ export const runMLv2_1Comparison = createServerFn({ method: "POST" })
       },
     };
   });
+
 /* ------------------------------------------------------------------ *
  * ML Lab — avaliação configurável de features
  * ------------------------------------------------------------------ */
@@ -1929,7 +1936,7 @@ export const runMLLabEvaluation = createServerFn({ method: "POST" })
   });
 
 /* ------------------------------------------------------------------ *
- * ML Lab — Feature Search automática
+ * ML Lab — Feature Search automática (global)
  * ------------------------------------------------------------------ */
 
 const FeatureSearchInput = z.object({
@@ -2012,6 +2019,116 @@ export const runMLLabFeatureSearch = createServerFn({ method: "POST" })
     };
 
     return runFeatureSearch(dataset, histories, params, data.candidateIds);
+  });
+
+/* ------------------------------------------------------------------ *
+ * ML Lab — Feature Search por posição
+ * ------------------------------------------------------------------ */
+
+const PositionSearchInput = z.object({
+  strategy: z.enum(["exhaustive", "forward", "beam"]).default("beam"),
+  metric: z.enum(["mae", "rmse", "pearson"]).default("mae"),
+  beamWidth: z.number().int().min(1).max(200).default(10),
+  maxFeatures: z.number().int().min(1).max(58).default(20),
+  minFeatures: z.number().int().min(1).max(58).default(1),
+  maxExperiments: z.number().int().min(1).max(20000).default(5000),
+  minRoundsBetterThanBaseline: z.number().int().min(0).default(0),
+  maxSingleRoundMAEWorsening: z.number().min(0).max(10).default(1),
+  lambda: z.number().min(0).default(1),
+  firstRound: z.number().int().min(1).default(5),
+  lastRound: z.number().int().min(1).default(26),
+  participationWindow: z.number().int().min(1).default(12),
+  candidateIds: z
+    .array(z.string())
+    .min(1)
+    .default([...FEATURE_CATALOG_IDS]),
+  positions: z
+    .array(z.string())
+    .min(1)
+    .default(["GOL", "LAT", "ZAG", "MEI", "ATA"]),
+});
+
+export interface PositionSearchResponse {
+  results: PositionFeatureSearchResult[];
+  firstRound: number;
+  lastRound: number;
+  participationWindow: number;
+}
+
+export const runMLLabPositionFeatureSearch = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => PositionSearchInput.parse(input))
+  .handler(async ({ data }): Promise<PositionSearchResponse> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    const params: SearchParams = {
+      strategy: data.strategy,
+      metric: data.metric,
+      beamWidth: data.beamWidth,
+      maxFeatures: data.maxFeatures,
+      minFeatures: data.minFeatures,
+      maxExperiments: data.maxExperiments,
+      minRoundsBetterThanBaseline: data.minRoundsBetterThanBaseline,
+      maxSingleRoundMAEWorsening: data.maxSingleRoundMAEWorsening,
+      lambda: data.lambda,
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    };
+
+    const results = runFeatureSearchByPosition(
+      dataset,
+      histories,
+      params,
+      data.candidateIds,
+      data.positions,
+    );
+
+    return {
+      results,
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    };
   });
 
 /* ------------------------------------------------------------------ *
