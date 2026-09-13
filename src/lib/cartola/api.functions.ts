@@ -55,6 +55,12 @@ import {
   type LabResult,
   type LabRunResult,
 } from "@/lib/ml/lab.functions";
+import {
+  runFeatureSearch,
+  FEATURE_CATALOG_IDS,
+  type FeatureSearchResult,
+  type SearchParams,
+} from "@/lib/ml/search.functions";
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
@@ -1920,6 +1926,92 @@ export const runMLLabEvaluation = createServerFn({ method: "POST" })
       },
       config,
     };
+  });
+
+/* ------------------------------------------------------------------ *
+ * ML Lab — Feature Search automática
+ * ------------------------------------------------------------------ */
+
+const FeatureSearchInput = z.object({
+  strategy: z.enum(["exhaustive", "forward", "beam"]).default("beam"),
+  metric: z.enum(["mae", "rmse", "pearson"]).default("mae"),
+  beamWidth: z.number().int().min(1).max(200).default(10),
+  maxFeatures: z.number().int().min(1).max(58).default(20),
+  minFeatures: z.number().int().min(1).max(58).default(1),
+  maxExperiments: z.number().int().min(1).max(20000).default(5000),
+  minRoundsBetterThanBaseline: z.number().int().min(0).default(0),
+  maxSingleRoundMAEWorsening: z.number().min(0).max(10).default(1),
+  lambda: z.number().min(0).default(1),
+  firstRound: z.number().int().min(1).default(5),
+  lastRound: z.number().int().min(1).default(26),
+  participationWindow: z.number().int().min(1).default(12),
+  candidateIds: z
+    .array(z.string())
+    .min(1)
+    .default([...FEATURE_CATALOG_IDS]),
+});
+
+export const runMLLabFeatureSearch = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => FeatureSearchInput.parse(input))
+  .handler(async ({ data }): Promise<FeatureSearchResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    const params: SearchParams = {
+      strategy: data.strategy,
+      metric: data.metric,
+      beamWidth: data.beamWidth,
+      maxFeatures: data.maxFeatures,
+      minFeatures: data.minFeatures,
+      maxExperiments: data.maxExperiments,
+      minRoundsBetterThanBaseline: data.minRoundsBetterThanBaseline,
+      maxSingleRoundMAEWorsening: data.maxSingleRoundMAEWorsening,
+      lambda: data.lambda,
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      participationWindow: data.participationWindow,
+    };
+
+    return runFeatureSearch(dataset, histories, params, data.candidateIds);
   });
 
 /* ------------------------------------------------------------------ *
