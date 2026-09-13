@@ -48,6 +48,13 @@ import {
   runTemporalEvaluationV21,
   type V21Result,
 } from "@/lib/ml/evaluation.v21.functions";
+import {
+  runConfigurableMLEvaluation,
+  V12A_LAB_CONFIG,
+  type LabFeatureConfig,
+  type LabResult,
+  type LabRunResult,
+} from "@/lib/ml/lab.functions";
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
@@ -1806,6 +1813,112 @@ export const runMLv2_1Comparison = createServerFn({ method: "POST" })
         normalizedRecordsWithDE,
         normalizedRecordsTotal,
       },
+    };
+  });
+/* ------------------------------------------------------------------ *
+ * ML Lab — avaliação configurável de features
+ * ------------------------------------------------------------------ */
+
+const LabConfigSchema = z.object({
+  numericFeatures: z.array(z.string()).default([]),
+  includePosition: z.boolean().default(false),
+  includeClub: z.boolean().default(false),
+  includeOpponent: z.boolean().default(false),
+  scoutFeatures: z.array(z.string()).default([]),
+});
+
+const LabInput = z.object({
+  config: LabConfigSchema,
+  lambda: z.number().min(0).default(1.0),
+  firstRound: z.number().int().min(1).default(5),
+  lastRound: z.number().int().min(1).default(26),
+  participationWindow: z.number().int().min(1).default(12),
+});
+
+export const runMLLabEvaluation = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => LabInput.parse(input))
+  .handler(async ({ data }): Promise<LabRunResult> => {
+    if (data.firstRound > data.lastRound) {
+      throw new Error("firstRound deve ser menor ou igual a lastRound");
+    }
+
+    const roundsToFetch: number[] = [];
+    for (let r = 1; r <= data.lastRound; r++) roundsToFetch.push(r);
+
+    const [rawRounds, fixturesRaw] = await Promise.all([
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`pontuados:${r}`, 30 * 60_000, () =>
+            getJson<RawPontuadosRound>(`/atletas/pontuados/${r}`).catch(() => ({
+              rodada: r,
+              atletas: {},
+            })),
+          ),
+        ),
+      ),
+      Promise.all(
+        roundsToFetch.map((r) =>
+          cached(`partidas:${r}`, 30 * 60_000, () =>
+            getJson<{ partidas: Partida[] }>(`/partidas/${r}`).catch(() => ({
+              partidas: [],
+            })),
+          ),
+        ),
+      ),
+    ]);
+
+    const fixturesByRound = new Map<number, Partida[]>();
+    roundsToFetch.forEach((r, i) => {
+      fixturesByRound.set(r, fixturesRaw[i].partidas ?? []);
+    });
+
+    const histories = buildHistoriesFromRawRounds(rawRounds);
+    const dataset = buildTrainingDatasetFromHistories({
+      firstRound: data.firstRound,
+      lastRound: data.lastRound,
+      histories,
+      fixturesByRound,
+    });
+
+    // Config normalizada — filtra scouts/números desconhecidos
+    const config: LabFeatureConfig = {
+      numericFeatures: data.config.numericFeatures,
+      includePosition: data.config.includePosition,
+      includeClub: data.config.includeClub,
+      includeOpponent: data.config.includeOpponent,
+      scoutFeatures: data.config.scoutFeatures,
+    };
+
+    const user = runConfigurableMLEvaluation(
+      dataset,
+      histories,
+      config,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    // Referência v1.2a com os MESMOS parâmetros (para Δ corretos)
+    const v12a = runConfigurableMLEvaluation(
+      dataset,
+      histories,
+      V12A_LAB_CONFIG,
+      data.firstRound,
+      data.lastRound,
+      data.participationWindow,
+      data.lambda,
+    );
+
+    return {
+      user,
+      v12aSummary: {
+        predictions: v12a.overall.ml.count,
+        mae: v12a.overall.ml.mae,
+        rmse: v12a.overall.ml.rmse,
+        pearson: v12a.overall.ml.pearson,
+      },
+      config,
     };
   });
 
