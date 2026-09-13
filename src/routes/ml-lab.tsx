@@ -13,7 +13,6 @@ import {
   type SearchMetric,
   type SearchStrategy,
 } from "@/lib/ml/search.functions";
-
 /* ---------------- Constantes de features ---------------- */
 
 const NUMERIC_FEATURES_ALL: string[] = [
