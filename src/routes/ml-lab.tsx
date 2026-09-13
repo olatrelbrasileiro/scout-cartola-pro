@@ -5,11 +5,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   runMLLabEvaluation,
   runMLLabFeatureSearch,
+  runMLLabPositionFeatureSearch,
 } from "@/lib/cartola/api.functions";
 import type { LabRunResult } from "@/lib/ml/lab.functions";
 import {
   FEATURE_CATALOG,
   type FeatureSearchResult,
+  type PositionFeatureSearchResult,
   type PositionRankings,
   type SearchMetric,
   type SearchStrategy,
@@ -951,8 +953,11 @@ function MLLabPage() {
         </section>
       )}
 
-      {/* ============== FEATURE SEARCH ============== */}
+      {/* ============== FEATURE SEARCH GLOBAL ============== */}
       <FeatureSearchSection />
+
+      {/* ============== FEATURE SEARCH POR POSIÇÃO ============== */}
+      <FeatureSearchByPositionSection />
 
       <footer className="border-t pt-4 text-xs text-muted-foreground">
         Laboratório experimental. Nenhuma versão anterior (v1, v1.1, v1.2,
@@ -963,7 +968,7 @@ function MLLabPage() {
   );
 }
 
-/* ---------------- Feature Search ---------------- */
+/* ---------------- Feature Search (global) ---------------- */
 
 function FeatureSearchSection() {
   const [strategy, setStrategy] = useState<SearchStrategy>("beam");
@@ -1047,7 +1052,7 @@ function FeatureSearchSection() {
   return (
     <section className="space-y-4 rounded border-2 border-blue-200 p-4">
       <header>
-        <h2 className="text-xl font-bold">Feature Search</h2>
+        <h2 className="text-xl font-bold">Feature Search (global)</h2>
         <p className="text-sm text-muted-foreground">
           Busca automática de combinações. Resultados desta busca são
           exploratórios e podem sofrer overfitting ao período histórico
@@ -1414,7 +1419,7 @@ function FeatureSearchSection() {
             Assinatura do contexto: <code>{result.signature}</code>
           </p>
 
-          {/* ===== Rankings por posição ===== */}
+          {/* ===== Rankings por posição (da busca global) ===== */}
           {result.positionRankings.length > 0 && (
             <PositionRankingsSection rankings={result.positionRankings} />
           )}
@@ -1424,7 +1429,628 @@ function FeatureSearchSection() {
   );
 }
 
-/* ---------------- Rankings por posição ---------------- */
+/* ---------------- Feature Search por posição ---------------- */
+
+function FeatureSearchByPositionSection() {
+  const [strategy, setStrategy] = useState<SearchStrategy>("beam");
+  const [metric, setMetric] = useState<SearchMetric>("mae");
+  const [beamWidth, setBeamWidth] = useState(10);
+  const [maxFeatures, setMaxFeatures] = useState(20);
+  const [minFeatures, setMinFeatures] = useState(1);
+  const [maxExperiments, setMaxExperiments] = useState(5000);
+  const [minRoundsBetter, setMinRoundsBetter] = useState(0);
+  const [maxWorsening, setMaxWorsening] = useState(1.0);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<PositionFeatureSearchResult[] | null>(
+    null,
+  );
+  const [candidateState, setCandidateState] = useState<Record<string, boolean>>(
+    () => {
+      const m: Record<string, boolean> = {};
+      for (const e of FEATURE_CATALOG) m[e.id] = true;
+      // position é excluída das buscas por posição — não tem variância
+      m.position = false;
+      return m;
+    },
+  );
+
+  const candidateIds = FEATURE_CATALOG.filter((e) => candidateState[e.id]).map(
+    (e) => e.id,
+  );
+
+  async function handleRun() {
+    setRunning(true);
+    setError(null);
+    setResults(null);
+    try {
+      const res = await runMLLabPositionFeatureSearch({
+        data: {
+          strategy,
+          metric,
+          beamWidth,
+          maxFeatures,
+          minFeatures,
+          maxExperiments,
+          minRoundsBetterThanBaseline: minRoundsBetter,
+          maxSingleRoundMAEWorsening: maxWorsening,
+          lambda: 1.0,
+          firstRound: 5,
+          lastRound: 26,
+          participationWindow: 12,
+          candidateIds,
+          positions: ["GOL", "LAT", "ZAG", "MEI", "ATA"],
+        },
+      });
+      setResults(res.results);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function toggleGroup(group: string, value: boolean) {
+    setCandidateState((s) => {
+      const next = { ...s };
+      for (const e of FEATURE_CATALOG) {
+        if (e.group === group) next[e.id] = value;
+      }
+      // position continua excluída neste modo
+      next.position = false;
+      return next;
+    });
+  }
+
+  const groups = Array.from(new Set(FEATURE_CATALOG.map((e) => e.group)));
+  const positionCandidates = candidateIds.filter((id) => id !== "position");
+
+  return (
+    <section className="space-y-4 rounded border-2 border-purple-200 p-4">
+      <header>
+        <h2 className="text-xl font-bold">Feature Search por posição</h2>
+        <p className="text-sm text-muted-foreground">
+          Executa uma busca independente para cada posição (GOL, LAT, ZAG,
+          MEI, ATA). Diferente do ranking por posição do painel global —
+          que apenas filtra as previsões já feitas — aqui o <strong>Ridge é
+          treinado separadamente por posição</strong>: o treino usa somente
+          jogadores daquela posição, o vocabulário categórico é reconstruído
+          apenas com o treino daquela posição, e as métricas comparam apenas
+          contra o baseline daquela posição. A feature <code>position</code>{" "}
+          é automaticamente removida dos candidatos (variância zero dentro
+          de uma única posição). Resultados são exploratórios e podem sofrer
+          overfitting ao período histórico utilizado.
+        </p>
+      </header>
+
+      {/* Parâmetros */}
+      <div className="grid gap-3 sm:grid-cols-4">
+        <label className="flex flex-col text-sm">
+          <span>Estratégia</span>
+          <select
+            value={strategy}
+            onChange={(e) => setStrategy(e.target.value as SearchStrategy)}
+            className="rounded border px-2 py-1"
+          >
+            <option value="exhaustive">Exhaustive</option>
+            <option value="forward">Forward Selection</option>
+            <option value="beam">Beam Search</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Métrica</span>
+          <select
+            value={metric}
+            onChange={(e) => setMetric(e.target.value as SearchMetric)}
+            className="rounded border px-2 py-1"
+          >
+            <option value="mae">MAE</option>
+            <option value="rmse">RMSE</option>
+            <option value="pearson">Pearson</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Beam width</span>
+          <input
+            type="number"
+            value={beamWidth}
+            onChange={(e) => setBeamWidth(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Max features</span>
+          <input
+            type="number"
+            value={maxFeatures}
+            onChange={(e) => setMaxFeatures(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Min features</span>
+          <input
+            type="number"
+            value={minFeatures}
+            onChange={(e) => setMinFeatures(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Max experiments (por posição)</span>
+          <input
+            type="number"
+            value={maxExperiments}
+            onChange={(e) => setMaxExperiments(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Min rodadas melhores que BL</span>
+          <input
+            type="number"
+            value={minRoundsBetter}
+            onChange={(e) => setMinRoundsBetter(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span>Pior deterioração (fração)</span>
+          <input
+            type="number"
+            step="0.05"
+            value={maxWorsening}
+            onChange={(e) => setMaxWorsening(Number(e.target.value))}
+            className="rounded border px-2 py-1"
+          />
+        </label>
+      </div>
+
+      {/* Candidatos */}
+      <details className="rounded border">
+        <summary className="cursor-pointer bg-muted px-3 py-2 text-sm">
+          Candidatos ({positionCandidates.length} / {FEATURE_CATALOG.length - 1}) — position é sempre excluída neste modo
+        </summary>
+        <div className="space-y-2 p-3">
+          <div className="flex flex-wrap gap-2">
+            {groups.map((g) => (
+              <div key={g} className="flex items-center gap-2 text-xs">
+                <span className="font-mono">{g}</span>
+                <button
+                  onClick={() => toggleGroup(g, true)}
+                  className="rounded border bg-muted px-1.5 py-0.5"
+                >
+                  +
+                </button>
+                <button
+                  onClick={() => toggleGroup(g, false)}
+                  className="rounded border bg-muted px-1.5 py-0.5"
+                >
+                  −
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+            {FEATURE_CATALOG.map((e) => {
+              const disabled = e.id === "position";
+              return (
+                <label
+                  key={e.id}
+                  className={`flex items-center gap-2 text-xs ${
+                    disabled ? "opacity-50" : ""
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!disabled && (candidateState[e.id] ?? false)}
+                    disabled={disabled}
+                    onChange={(ev) =>
+                      setCandidateState((s) => ({
+                        ...s,
+                        [e.id]: ev.target.checked,
+                      }))
+                    }
+                  />
+                  <span className="font-mono">{e.id}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </details>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={handleRun}
+          disabled={running || positionCandidates.length === 0}
+          className="rounded bg-purple-600 px-4 py-2 text-white disabled:opacity-50"
+        >
+          {running
+            ? "Executando por posição…"
+            : "Executar Feature Search por posição"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+
+      {results && (
+        <div className="space-y-4">
+          {/* Resumo */}
+          <div>
+            <h3 className="mb-2 font-semibold">Resumo por posição</h3>
+            <div className="overflow-x-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="border-b px-2 py-2 text-left">Posição</th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Experimentos
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Treino (linhas)
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Teste (linhas)
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">Melhor MAE</th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Melhor RMSE
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Melhor Pearson
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Baseline MAE
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">
+                      v1.2a MAE
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.map((r) => {
+                    const s = r.search;
+                    const trainRows = s
+                      ? Object.values(s.trainRowsByPosition).reduce(
+                          (a, b) => a + b,
+                          0,
+                        )
+                      : 0;
+                    const testRows = s
+                      ? Object.values(s.testRowsByPosition).reduce(
+                          (a, b) => a + b,
+                          0,
+                        )
+                      : 0;
+                    return (
+                      <tr key={r.position}>
+                        <td className="border-b px-2 py-1 font-mono font-semibold">
+                          {r.position}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s ? s.experimentCount : "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s ? trainRows : "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s ? testRows : "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s?.best?.mae?.toFixed(4) ?? "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s?.best?.rmse?.toFixed(4) ?? "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s?.best?.pearson?.toFixed(4) ?? "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s?.benchmarks.baseline.mae?.toFixed(4) ?? "—"}
+                        </td>
+                        <td className="border-b px-2 py-1 text-right">
+                          {s?.benchmarks.v12a.mae?.toFixed(4) ?? "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Treino/Teste = soma das linhas através dos folds (uma linha
+              pode aparecer como treino em várias rodadas posteriores).
+            </p>
+          </div>
+
+          {/* Por posição em detalhes */}
+          {results.map((r) => {
+            const s = r.search;
+            return (
+              <details key={r.position} className="rounded border">
+                <summary className="cursor-pointer bg-muted px-3 py-2 text-sm font-semibold">
+                  {r.position}
+                  {s?.best
+                    ? ` — Melhor MAE ${s.best.mae?.toFixed(4) ?? "—"}`
+                    : ""}
+                  {r.error ? ` — ERRO: ${r.error}` : ""}
+                </summary>
+
+                {r.error && !s && (
+                  <div className="p-3 text-xs text-red-800">
+                    Esta posição não pôde ser avaliada: {r.error}
+                  </div>
+                )}
+
+                {s && (
+                  <div className="space-y-3 p-3">
+                    {/* Estatísticas do universo */}
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      <Card label="Experimentos" value={s.experimentCount} />
+                      <Card
+                        label="Teste (linhas)"
+                        value={Object.values(s.testRowsByPosition).reduce(
+                          (a, b) => a + b,
+                          0,
+                        )}
+                      />
+                      <Card
+                        label="Cache hit/miss"
+                        value={`${s.cacheHits}/${s.cacheMisses}`}
+                      />
+                      <Card
+                        label="Truncado"
+                        value={s.truncatedToLimit ? "SIM" : "não"}
+                        tone={s.truncatedToLimit ? "warn" : "default"}
+                      />
+                    </div>
+
+                    {/* Benchmarks */}
+                    <div>
+                      <h4 className="mb-1 text-xs font-semibold">
+                        Benchmarks ({r.position})
+                      </h4>
+                      <div className="overflow-x-auto rounded border">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="border-b px-2 py-1 text-left">
+                                Fonte
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                Pred
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                MAE
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                RMSE
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                Pearson
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="border-b px-2 py-1">
+                                Baseline ({r.position})
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.baseline.predictions}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.baseline.mae?.toFixed(4) ?? "—"}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.baseline.rmse?.toFixed(4) ?? "—"}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.baseline.pearson?.toFixed(4) ??
+                                  "—"}
+                              </td>
+                            </tr>
+                            <tr>
+                              <td className="border-b px-2 py-1">
+                                v1.2a ({r.position})
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.v12a.predictions}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.v12a.mae?.toFixed(4) ?? "—"}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.v12a.rmse?.toFixed(4) ?? "—"}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {s.benchmarks.v12a.pearson?.toFixed(4) ?? "—"}
+                              </td>
+                            </tr>
+                            {s.best && (
+                              <tr className="bg-green-50">
+                                <td className="border-b px-2 py-1 font-semibold">
+                                  Melhor {r.position}
+                                </td>
+                                <td className="border-b px-2 py-1 text-right">
+                                  {s.best.predictions}
+                                </td>
+                                <td className="border-b px-2 py-1 text-right">
+                                  {s.best.mae?.toFixed(4) ?? "—"}
+                                </td>
+                                <td className="border-b px-2 py-1 text-right">
+                                  {s.best.rmse?.toFixed(4) ?? "—"}
+                                </td>
+                                <td className="border-b px-2 py-1 text-right">
+                                  {s.best.pearson?.toFixed(4) ?? "—"}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* TOP 10 */}
+                    <div>
+                      <h4 className="mb-1 text-xs font-semibold">
+                        TOP 10 — {r.position}
+                      </h4>
+                      <div className="space-y-1">
+                        {s.top.map((e, i) => (
+                          <div
+                            key={e.featureIds.join("|")}
+                            className="rounded border p-2 text-xs"
+                          >
+                            <div className="font-semibold">
+                              #{i + 1} — MAE {e.mae?.toFixed(4) ?? "—"} · RMSE{" "}
+                              {e.rmse?.toFixed(4) ?? "—"} · Pearson{" "}
+                              {e.pearson?.toFixed(4) ?? "—"} ·{" "}
+                              {e.featureCount} feats{" "}
+                              {e.robust ? "🟢 ROBUSTA" : "🟠 INSTÁVEL"}
+                            </div>
+                            <div className="font-mono text-[10px] text-muted-foreground">
+                              {e.featureIds.join(" | ")}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Frequência */}
+                    <div>
+                      <h4 className="mb-1 text-xs font-semibold">
+                        Frequência no TOP 10 — {r.position}
+                      </h4>
+                      <div className="overflow-x-auto rounded border">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="border-b px-2 py-1 text-left">
+                                feature
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                count
+                              </th>
+                              <th className="border-b px-2 py-1 text-right">
+                                %
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {s.frequency
+                              .filter((f) => f.countTop > 0)
+                              .slice(0, 20)
+                              .map((f) => (
+                                <tr key={f.featureId}>
+                                  <td className="border-b px-2 py-1 font-mono">
+                                    {f.featureId}
+                                  </td>
+                                  <td className="border-b px-2 py-1 text-right">
+                                    {f.countTop}/10
+                                  </td>
+                                  <td className="border-b px-2 py-1 text-right">
+                                    {(f.pctTop * 100).toFixed(0)}%
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Estágios */}
+                    <details className="rounded border">
+                      <summary className="cursor-pointer bg-muted px-2 py-1 text-xs">
+                        Estágios ({s.stages.length})
+                      </summary>
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-muted">
+                          <tr>
+                            <th className="border-b px-2 py-1 text-left">
+                              estágio
+                            </th>
+                            <th className="border-b px-2 py-1 text-right">
+                              experimentos
+                            </th>
+                            <th className="border-b px-2 py-1 text-right">
+                              melhor MAE
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {s.stages.map((st, i) => (
+                            <tr key={i}>
+                              <td className="border-b px-2 py-1">{st.stage}</td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {st.experimentsRun}
+                              </td>
+                              <td className="border-b px-2 py-1 text-right">
+                                {st.bestMAE?.toFixed(4) ?? "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </details>
+
+                    <p className="text-[10px] text-muted-foreground">
+                      Assinatura: <code>{s.signature}</code>
+                    </p>
+                  </div>
+                )}
+              </details>
+            );
+          })}
+
+          {/* Auditoria */}
+          <details className="rounded border border-amber-200 bg-amber-50">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-amber-900">
+              Auditoria — Feature Search por posição
+            </summary>
+            <div className="space-y-1 p-3 text-xs text-amber-900">
+              {results.map((r) => {
+                const s = r.search;
+                if (!s) {
+                  return (
+                    <div key={r.position}>
+                      <strong>{r.position}</strong> — sem resultado ({r.error})
+                    </div>
+                  );
+                }
+                const positionsInTest = Object.keys(s.testRowsByPosition);
+                const foreignPositions = positionsInTest.filter(
+                  (p) => p !== r.position && p !== "__UNKNOWN__",
+                );
+                const noLeak =
+                  s.positionFilter === r.position &&
+                  Object.keys(s.trainRowsByPosition).every(
+                    (p) => p === r.position || p === "__UNKNOWN__",
+                  );
+                return (
+                  <div key={r.position}>
+                    <strong>{r.position}</strong> — filtro={s.positionFilter} ·
+                    treino positions=[{Object.keys(s.trainRowsByPosition).join(",")}] ·
+                    teste positions=[{positionsInTest.join(",")}] ·
+                    posições estranhas={foreignPositions.length === 0 ? "OK" : foreignPositions.join(",")} ·
+                    sem leakage={noLeak ? "OK" : "FAIL"}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- Rankings por posição (busca global) ---------------- */
 
 function PositionRankingsSection({
   rankings,
@@ -1449,15 +2075,13 @@ function PositionRankingsSection({
     <div className="space-y-4">
       <header>
         <h3 className="mb-1 text-lg font-bold">
-          Melhores combinações por posição
+          Melhores combinações por posição (a partir da busca global)
         </h3>
         <p className="text-xs text-muted-foreground">
-          Rankings derivados dos mesmos experimentos executados. O Ridge NÃO
-          é reexecutado por posição — a divisão acontece sobre as previsões
-          já calculadas. São exploratórios e podem sofrer overfitting ao
-          período histórico utilizado. Servem para identificar padrões que
-          mereçam validação posterior; não afirmam que uma combinação é
-          definitivamente melhor fora do período.
+          Rankings derivados dos mesmos experimentos da busca global. Aqui o
+          Ridge NÃO é reexecutado por posição — a divisão acontece sobre as
+          previsões já calculadas. Para treinar o modelo separadamente por
+          posição, use a seção "Feature Search por posição" abaixo.
         </p>
       </header>
 
