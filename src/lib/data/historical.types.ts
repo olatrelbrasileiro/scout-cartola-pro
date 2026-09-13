@@ -1,7 +1,7 @@
 /**
  * Posições possíveis no Cartola FC.
  */
-export type CartolaPosition = 'GOL' | 'LAT' | 'ZAG' | 'MEI' | 'ATA' | 'TEC';
+export type CartolaPosition = "GOL" | "LAT" | "ZAG" | "MEI" | "ATA" | "TEC";
 
 /**
  * Scouts retornados pelo histórico do Cartola.
@@ -10,25 +10,25 @@ export type CartolaPosition = 'GOL' | 'LAT' | 'ZAG' | 'MEI' | 'ATA' | 'TEC';
  * as chaves dos scouts que ocorreram na partida.
  */
 export interface CartolaScouts {
-  G?: number;   // gols
-  A?: number;   // assistências
-  FT?: number;  // finalizações na trave
-  FD?: number;  // defesas do goleiro
-  FF?: number;  // finalizações para fora
-  FS?: number;  // faltas sofridas
-  PP?: number;  // pênaltis perdidos
-  PS?: number;  // pênaltis sofridos
-  DS?: number;  // desarmes
-  DP?: number;  // defesas de pênalti
-  DE?: number;  // defesas difíceis
-  SG?: number;  // saldo de gols (jogo sem sofrer gol)
-  GS?: number;  // gols sofridos
-  FC?: number;  // faltas cometidas
-  GC?: number;  // gols contra
-  CA?: number;  // cartões amarelos
-  CV?: number;  // cartões vermelhos
-  PC?: number;  // pênaltis cometidos
-  I?: number;   // interceptações
+  G?: number; // gols
+  A?: number; // assistências
+  FT?: number; // finalizações na trave
+  FD?: number; // defesas do goleiro
+  FF?: number; // finalizações para fora
+  FS?: number; // faltas sofridas
+  PP?: number; // pênaltis perdidos
+  PS?: number; // pênaltis sofridos
+  DS?: number; // desarmes
+  DP?: number; // defesas de pênalti
+  DE?: number; // defesa
+  SG?: number; // saldo de gols (jogo sem sofrer gol)
+  GS?: number; // gols sofridos
+  FC?: number; // faltas cometidas
+  GC?: number; // gols contra
+  CA?: number; // cartões amarelos
+  CV?: number; // cartões vermelhos
+  PC?: number; // pênaltis cometidos
+  I?: number; // interceptações
 }
 
 /**

@@ -16,7 +16,7 @@ export const SCOUT_VALUES: Record<string, number> = {
   PS: 1, // pênalti sofrido
   // Defensivos
   DS: 1.2,
-  DE: 1, // defesa difícil (goleiro)
+  DE: 1, // defesa
   DP: 7, // defesa de pênalti
   SG: 5, // jogo sem sofrer gol (gol/zag/lat)
   // Negativos
@@ -55,7 +55,13 @@ export type RodadaPontuada = {
 export type HistoricoPorAtleta = Map<
   number,
   {
-    rodadas: { rodada: number; pontuacao: number; scout: Record<string, number>; basica: number; jogou: boolean }[];
+    rodadas: {
+      rodada: number;
+      pontuacao: number;
+      scout: Record<string, number>;
+      basica: number;
+      jogou: boolean;
+    }[];
     media_total: number;
     media_basica: number;
     media_recente_3: number;
@@ -88,7 +94,13 @@ export function buildHistoricoPorAtleta(rodadas: RodadaPontuada[]): HistoricoPor
         rodadas_atuou: [],
         atuou_ultima: false,
       };
-      cur.rodadas.push({ rodada: r.rodada, pontuacao: info.pontuacao, scout: info.scout, basica, jogou });
+      cur.rodadas.push({
+        rodada: r.rodada,
+        pontuacao: info.pontuacao,
+        scout: info.scout,
+        basica,
+        jogou,
+      });
       if (jogou) cur.rodadas_atuou.push(r.rodada);
       map.set(id, cur);
     }
@@ -104,7 +116,8 @@ export function buildHistoricoPorAtleta(rodadas: RodadaPontuada[]): HistoricoPor
     h.media_recente_3 = recentes.reduce((s, x) => s + x.pontuacao, 0) / recentes.length;
     // consistência: 1 - (desvio padrão normalizado)
     const m = h.media_total;
-    const variancia = jogadas.reduce((s, x) => s + Math.pow(x.pontuacao - m, 2), 0) / jogadas.length;
+    const variancia =
+      jogadas.reduce((s, x) => s + Math.pow(x.pontuacao - m, 2), 0) / jogadas.length;
     const dp = Math.sqrt(variancia);
     h.consistencia = Math.max(0, Math.min(1, 1 - dp / 8));
     h.atuou_ultima = ultimaRodada !== undefined && h.rodadas_atuou.includes(ultimaRodada);
@@ -118,7 +131,10 @@ export function buildHistoricoPorAtleta(rodadas: RodadaPontuada[]): HistoricoPor
  * Calcula a forma do TIME do atleta nas últimas N rodadas a partir do histórico.
  * Soma pontos médios por atleta de cada clube nas últimas rodadas.
  */
-export function buildFormaPorClube(rodadas: RodadaPontuada[], atletas: Atleta[]): Map<number, number> {
+export function buildFormaPorClube(
+  rodadas: RodadaPontuada[],
+  atletas: Atleta[],
+): Map<number, number> {
   const clubeAtletas = new Map<number, number[]>();
   for (const a of atletas) {
     const arr = clubeAtletas.get(a.clube_id) ?? [];
@@ -145,7 +161,9 @@ export function buildFormaPorClube(rodadas: RodadaPontuada[], atletas: Atleta[])
 }
 
 /** Mapa clube_id → adversário e mando da próxima rodada. */
-export function adversarioMap(partidas: Partida[]): Map<number, { adv_id: number; mando: "casa" | "fora" }> {
+export function adversarioMap(
+  partidas: Partida[],
+): Map<number, { adv_id: number; mando: "casa" | "fora" }> {
   const m = new Map<number, { adv_id: number; mando: "casa" | "fora" }>();
   for (const p of partidas) {
     m.set(p.clube_casa_id, { adv_id: p.clube_visitante_id, mando: "casa" });
@@ -175,13 +193,14 @@ export function calcularScore(
 
   // 1. Histórico (consistência * 0.5 + média/12 * 0.5)
   const f_historico = h
-    ? Math.round((h.consistencia * 50 + norm(h.media_total, 12) * 50))
+    ? Math.round(h.consistencia * 50 + norm(h.media_total, 12) * 50)
     : Math.round(norm(atleta.media_num, 12) * 60);
 
   // 2. Momento recente
-  const f_momento = h && h.rodadas.filter((x) => x.jogou).length > 0
-    ? Math.round(norm(h.media_recente_3, 14) * 100)
-    : Math.round(norm(atleta.pontos_num, 14) * 60);
+  const f_momento =
+    h && h.rodadas.filter((x) => x.jogou).length > 0
+      ? Math.round(norm(h.media_recente_3, 14) * 100)
+      : Math.round(norm(atleta.pontos_num, 14) * 60);
 
   // 3. Média básica
   const f_basica = h
@@ -205,7 +224,13 @@ export function calcularScore(
 
   // 6. Status + atuou
   const statusBonus =
-    atleta.status_id === 7 ? 100 : atleta.status_id === 2 ? 60 : atleta.status_id === 5 || atleta.status_id === 3 ? 0 : 50;
+    atleta.status_id === 7
+      ? 100
+      : atleta.status_id === 2
+        ? 60
+        : atleta.status_id === 5 || atleta.status_id === 3
+          ? 0
+          : 50;
   const atuouBonus = h?.atuou_ultima ? 100 : h && h.rodadas_atuou.length > 0 ? 70 : 50;
   const f_status = Math.round((statusBonus + atuouBonus) / 2);
 
