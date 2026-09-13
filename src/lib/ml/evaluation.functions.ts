@@ -18,7 +18,7 @@ import {
 } from './model.functions';
 
 /* ================================================================== *
- * Listas-base de features
+ * Listas-base de features (exportadas para reuso pelo v2)
  * ================================================================== */
 
 /**
@@ -28,7 +28,7 @@ import {
  * auditoria de proveniência histórica — vêm do payload pós-rodada de
  * /atletas/pontuados. Mantidos aqui por decisão explícita do projeto.
  */
-const NUMERIC_FEATURES = [
+export const NUMERIC_FEATURES = [
   'clubId',
   'isHome',
   'opponentClubId',
@@ -48,14 +48,14 @@ const NUMERIC_FEATURES = [
   'rounds_since_last_game',
 ] as const;
 
-const POSITIONS = ['GOL', 'LAT', 'ZAG', 'MEI', 'ATA', 'TEC'] as const;
+export const POSITIONS = ['GOL', 'LAT', 'ZAG', 'MEI', 'ATA', 'TEC'] as const;
 // one-hot: 5 dummies (TEC é a categoria de referência)
 
 /**
- * Features numéricas usadas no v1.2 e v1.2a: as mesmas do v1.1 SEM
+ * Features numéricas usadas no v1.2, v1.2a e v2: as mesmas do v1.1 SEM
  * clubId, SEM opponentClubId e SEM points_avg_3_minus_avg_12.
  */
-const NUMERIC_FEATURES_V12 = NUMERIC_FEATURES.filter(
+export const NUMERIC_FEATURES_V12 = NUMERIC_FEATURES.filter(
   (f) =>
     f !== 'clubId' &&
     f !== 'opponentClubId' &&
@@ -63,10 +63,10 @@ const NUMERIC_FEATURES_V12 = NUMERIC_FEATURES.filter(
 );
 
 /* ================================================================== *
- * Helpers compartilhados
+ * Helpers compartilhados (exportados para reuso pelo v2)
  * ================================================================== */
 
-function extractFeatureVector(
+export function extractFeatureVector(
   row: TrainingFeatureRow,
   numericFeatures: readonly string[],
 ): (number | null)[] {
@@ -86,7 +86,7 @@ function extractFeatureVector(
   return out;
 }
 
-function computeMetrics(
+export function computeMetrics(
   predictions: number[],
   actuals: number[],
 ): EvaluationMetrics {
@@ -106,7 +106,7 @@ function computeMetrics(
  * (drop-one) é o MENOR id presente no treino daquela rodada — escolha
  * determinística e independente do target.
  */
-function buildSortedVocab(values: (number | null)[]): number[] {
+export function buildSortedVocab(values: (number | null)[]): number[] {
   const set = new Set<number>();
   for (const v of values) if (v !== null) set.add(v);
   return [...set].sort((a, b) => a - b);
@@ -232,7 +232,7 @@ export function runTemporalEvaluation(
 }
 
 /* ================================================================== *
- * ML v1.2 — one-hot encoding temporal para clubId / opponentClubId
+ * ML v1.2 — one-hot temporal de clubId/opponentClubId
  * (UNKNOWN → all-zero, se confunde com a referência)
  * ================================================================== */
 
@@ -440,8 +440,7 @@ export function runTemporalEvaluationWithCategorical(
 }
 
 /* ================================================================== *
- * ML v1.2a — UNKNOWN explícito em clubId / opponentClubId
- * (UNKNOWN → coluna dedicada)
+ * ML v1.2a — UNKNOWN explícito em clubId/opponentClubId
  * ================================================================== */
 
 export interface CategoricalVerificationResult {
@@ -465,7 +464,7 @@ export interface MLv1_2a_Result extends MLv1Result {
 }
 
 /**
- * One-hot com coluna UNKNOWN explícita (v1.2a).
+ * One-hot com coluna UNKNOWN explícita (v1.2a, v2).
  *
  * Estrutura das colunas (ordem):
  *   [ known_2, known_3, ..., known_K, UNKNOWN ]
@@ -476,7 +475,7 @@ export interface MLv1_2a_Result extends MLv1Result {
  * - valor null OU valor fora do vocab → ativa UNKNOWN (última coluna).
  * - UNKNOWN nunca participa do vocab e nunca é referência.
  */
-function encodeOneHotWithUnknown(
+export function encodeOneHotWithUnknown(
   value: number | null,
   vocab: number[],
 ): number[] {
