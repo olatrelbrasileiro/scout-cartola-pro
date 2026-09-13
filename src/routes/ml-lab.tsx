@@ -703,6 +703,62 @@ function MLLabPage() {
             </div>
           </section>
 
+          {/* Por posição */}
+          <section>
+            <h2 className="mb-2 text-lg font-semibold">Por posição</h2>
+            <div className="overflow-x-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-muted">
+                  <tr>
+                    <th className="border-b px-2 py-2 text-left">Posição</th>
+                    <th className="border-b px-2 py-2 text-right">
+                      Previsões
+                    </th>
+                    <th className="border-b px-2 py-2 text-right">MAE</th>
+                    <th className="border-b px-2 py-2 text-right">RMSE</th>
+                    <th className="border-b px-2 py-2 text-right">Pearson</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {["GOL", "LAT", "ZAG", "MEI", "ATA", "TEC", "__UNKNOWN__"]
+                    .filter((p) => result.user.byPosition[p] !== undefined)
+                    .map((p) => {
+                      const m = result.user.byPosition[p];
+                      return (
+                        <tr key={p}>
+                          <td className="border-b px-2 py-1 font-mono">
+                            {p === "__UNKNOWN__" ? "— (sem posição)" : p}
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {m.count}
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {fmt(m.mae, 3)}
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {fmt(m.rmse, 3)}
+                          </td>
+                          <td className="border-b px-2 py-1 text-right">
+                            {fmt(m.pearson, 3)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+            {result.user.byPosition["__UNKNOWN__"]?.count > 0 && (
+              <p className="mt-1 text-xs text-amber-700">
+                ⚠️ {result.user.byPosition["__UNKNOWN__"].count} previsões sem
+                posição definida no registro de teste.
+              </p>
+            )}
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Diagnóstico apenas. O ranking do Feature Search e as métricas
+              gerais não usam estas informações.
+            </p>
+          </section>
+
           {/* Auditoria */}
           <section>
             <h2 className="mb-2 text-lg font-semibold">Auditoria</h2>
